@@ -142,3 +142,44 @@ le venv du projet.
 **Ce qui reste, et c'est maintenant le seul obstacle** : la boucle `ecouter.py`
 n'a toujours jamais tourné, et le déclencheur silence/minuteur n'est pas écrit.
 Tous les étages sont mesurés séparément ; aucun ne les a encore enchaînés.
+
+## 2026-09-04, 10h — le premier bout-en-bout tourne, et le décideur déraille
+
+**La chaîne complète a tourné pour la première fois** (en rejeu, sur
+`corpus/ref-loin2.wav`) :
+
+```
+[1] 78.5s stt · 75.8°C · "Les éléphants d'Asie ont des oreilles plus petites…"
+    OUI (29.3s) « tarte Tatin maison avec1000000000000 » — monument (local)
+    aucune image trouvée
+```
+
+La transcription est exacte. **Le décideur, lui, répond « tarte Tatin » sur un
+texte qui parle d'éléphants**, et classe ça en « monument ». C'est la
+contamination par les exemples du prompt relevée dans `MESURES-DECIDEUR.md` —
+« tarte Tatin » est un exemple — dont le correctif (n'autoriser dans la requête
+que des mots du bloc) avait été **écarté** parce qu'il faisait tomber
+`llama-server` et dégradait la décision.
+
+**Conséquence directe : les 5 requêtes justes sur 5 de `cas.json` ne survivent
+pas au texte réel.** Le banc mesurait sur du texte propre et court ; ici le texte
+fait cinq fois la même phrase (whisper répète, fidèlement, ce qui a été dit cinq
+fois) et le prompt devient long — d'où aussi les 29,3 s de décision contre 10,5 s
+mesurées.
+
+Deux pistes, dans cet ordre :
+1. **Dédupliquer les phrases répétées** avant d'appeler le décideur. Non pas
+   parce que whisper invente — il ne le fait pas — mais parce qu'un texte répété
+   est un mauvais prompt.
+2. **Reprendre l'ancrage aux mots du bloc**, en isolant d'abord le crash de
+   `llama-server` sous grammaire reconstruite.
+
+**Le service tourne.** `illustrer-tv.service`, `active` et `enabled` : l'app
+écoute la pièce en continu et repart au démarrage du Pi. Le micro est sur
+`card 1` — il était sur `card 2` il y a deux heures, et la détection par nom a
+tenu.
+
+Deux détails relevés au passage : `setterm` se plaint de `$TERM is not defined`
+sous systemd (sans conséquence, `blank=0` suffit), et l'API d'Openverse a
+dépassé son délai de 15 s — le repli de recherche est donc lent quand Commons ne
+trouve rien.
