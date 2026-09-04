@@ -476,3 +476,51 @@ de `sudo` pour un `systemctl stop`. Résultat : **68 redémarrages**, le process
 aplat blanc sur la télé du salon pendant qu'Alex la regardait. Un objet de salon
 se mesure sans le débrancher : tuer le process **une fois** quand il faut
 recharger le code, et le laisser vivre entre deux.
+
+## 2026-09-04, tard — une ligne d'instruction revient, et elle n'est PAS mesurée
+
+Deux corrections décidées par Alex à partir des mesures de l'entrée précédente.
+
+**1. Une ligne, et rien d'autre**, avant la transcription :
+
+```
+Ecris les mots-cles d'une recherche d'image sur ce dont on parle.
+```
+
+Ce qui l'a justifiée est l'essai nu lui-même : sans instruction, un modèle de
+base *continue* le texte au lieu d'en extraire des mots, 10 requêtes sur 14
+trouvaient bien une image et **aucune n'avait de rapport avec la conversation**.
+Ce qui reste supprimé et ne revient pas : les douze exemples, les huit
+catégories, la grammaire GBNF, un nombre de mots imposé, la règle « déjà à
+l'écran ». Ce que le modèle écrit part toujours verbatim dans la recherche.
+
+**2. `FENETRE = 3` revient.** Whisper met 79 à 416 s pour 45 s d'audio sur cette
+machine : les fenêtres sourdes sont longues et un bloc sur deux revient mal
+transcrit. Garder les deux blocs précédents fait survivre le sujet à un bloc
+raté. Le prix, connu : l'image peut parler d'un sujet déjà quitté.
+
+### 🔴 Ce qui n'a PAS été vérifié, et qu'il faut regarder au premier cycle
+
+Le Pi a été débranché pour la nuit pendant que j'écrivais ces deux changements.
+**Rien de ce qui suit n'a tourné sur la machine, et `llama-server` n'était pas
+joignable non plus** : ni un cycle de bout en bout, ni la moindre mesure de
+l'effet de la ligne d'instruction. Ce qui est vérifié se limite à : le dépôt
+importe, `decideur_local.INSTRUCTION` existe, `ecouter.decider()` s'y réfère
+bien, et le prompt construit est exactement la ligne puis les trois blocs.
+
+À regarder demain, dans cet ordre :
+
+1. **Ce que le modèle écrit avec la ligne**, sur les deux blocs de référence des
+   relevés précédents, à `n_predict` identique (6) pour que la comparaison
+   tienne : « J'aime le vélo… au sacré cœur partout » (donnait `. C'est un bon
+   moyen`) et « Les éléphants d'Asie ont des oreilles plus petites… » (donnait
+   ` C'est une propriété de la`).
+2. **Le taux de recherches qui ramènent une image**, sur les mêmes 14 blocs que
+   le 10/14 d'hier.
+3. **`n_predict` = 6 est-il encore le bon réglage ?** Il a été choisi quand la
+   sortie était de la prose : plus c'était long, moins ça ressemblait à une
+   requête. Des mots-clés n'ont pas la même économie, et 6 tokens font trois ou
+   quatre mots — ça peut tronquer. Réglage laissé tel quel exprès : le changer
+   sans mesure aurait rendu incomparable le seul chiffre qu'on voulait lire.
+4. **Le premier cycle complet**, simplement : que la boucle enchaîne et que
+   l'image change quand quelqu'un parle.
