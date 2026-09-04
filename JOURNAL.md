@@ -403,12 +403,13 @@ profondeur et 14 tokens à générer contre 100 et 6. Le prompt court est deux f
 gagnant.
 
 🔴 **Et c'est une correction à ce que j'avais écrit plus haut dans cette même
-entrée** : sur le cas courant de l'ancien code — un « non » — la grammaire
-ramenait la génération à 2 tokens, et l'ancien prompt était alors *plus rapide*
-que le nouveau (3,2 s contre 1,6 s sur le bloc court… non, l'inverse ; mais 3,7 s
-contre 1,7 s à froid, l'écart est mince). L'ancien design n'était pas lent par
-bêtise. Ce qu'on a acheté ce soir, c'est un comportement, pas de la vitesse — et
-la vitesse est venue par-dessus, sur les blocs longs.
+entrée**, où j'attribuais le gain à la disparition des ~600 tokens de préfixe.
+C'est faux : `cache_prompt` les rendait déjà gratuits, et l'ancien design n'était
+pas lent par bêtise. La grammaire lui faisait même gagner sur son cas courant, un
+« non » en 2 tokens générés — sur le bloc court, l'écart tombe à 3,2 s contre
+1,6 s, deux fois moins que le facteur 2,7 du bloc de longueur réelle. **Le gain
+est donc entièrement dans les blocs longs**, ceux que la porte sonore laisse
+passer maintenant, et il vient de la profondeur du contexte, pas du préfixe.
 
 **Ce qui domine tout, de très loin, c'est whisper et la température.** Sur les
 cinq cycles observés après le changement : 368,9 s, 78,9 s, 209,1 s et 416,1 s de
