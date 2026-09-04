@@ -1,0 +1,60 @@
+{
+  "_lire_moi": "Jeu de test du décideur. 17 blocs façon whisper `tiny` en français : ponctués, parfois un mot faux, parfois tronqués. `attendu` est la bonne réponse ; `sujet` est ce qui est DÉJÀ à l'écran au moment du bloc (contexte passé au décideur). 12 « non » contre 5 « oui » : c'est volontaire, la qualité qui compte est la RETENUE. `piege` marque les blocs qui ressemblent à un « oui » sans en être un — ce sont eux qui produisent les faux positifs.",
+  "cas": [
+    {"id": "n01-diner", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Bon alors du coup on fait quoi pour ce soir ? Moi je peux ramener le dessert si tu veux. Ah non mais t'inquiète, j'ai déjà tout prévu."},
+
+    {"id": "n02-opinion", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Franchement je trouve ça complètement nul comme façon de faire. Enfin bon, chacun son truc hein."},
+
+    {"id": "n03-blague", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Et là il me dit « bah c'est pas moi c'est le chat ». Non mais t'imagines. On était morts de rire."},
+
+    {"id": "n04-tronque", "sujet": null, "attendu": false, "piege": false,
+     "texte": "enfin voilà quoi, c'est le... le truc là avec le... bon bref."},
+
+    {"id": "n05-sentiment", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Je sais pas, en ce moment je suis un peu fatigué. J'ai du mal à me lever le matin."},
+
+    {"id": "n06-train", "sujet": null, "attendu": false, "piege": true,
+     "texte": "Tu prends le train de 8h12 ou celui d'après ? Parce que moi j'arrive à la gare vers 8h30."},
+
+    {"id": "n07-abstrait", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Le problème c'est que personne n'assume ses responsabilités dans cette histoire."},
+
+    {"id": "n08-vague", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Ouais non mais attends, il a dit qu'il rappelait demain. Enfin je crois. Bon, on verra bien."},
+
+    {"id": "n09-deja-affiche", "sujet": "Tour Eiffel", "attendu": false, "piege": true,
+     "texte": "Ah oui la tour Eiffel, ouais, on y était l'année dernière, c'était vraiment bien."},
+
+    {"id": "n10-tarifs", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Ils ont augmenté les tarifs de quinze pour cent sans prévenir personne, c'est abusé."},
+
+    {"id": "n11-agenda", "sujet": null, "attendu": false, "piege": false,
+     "texte": "Non le rendez-vous c'est jeudi quatorze heures, pas mercredi. J'ai reçu le mail hier soir."},
+
+    {"id": "n12-lieu-logistique", "sujet": null, "attendu": false, "piege": true,
+     "texte": "Faut que je passe à la pharmacie de la place Gambetta avant qu'elle ferme, sinon c'est mort."},
+
+    {"id": "o01-colisee", "sujet": null, "attendu": true, "piege": false,
+     "attendu_requete": ["colisée", "colisee", "rome"],
+     "texte": "On est allés à Rome le mois dernier. Le Colisée, franchement, ça vaut le détour. C'est immense en vrai."},
+
+    {"id": "o02-axolotl", "sujet": null, "attendu": true, "piege": false,
+     "attendu_requete": ["axolotl", "salamandre"],
+     "texte": "Tu savais que l'axolotl peut repousser ses pattes ? C'est un genre de salamandre mexicaine, rose, avec des branchies bizarres."},
+
+    {"id": "o03-couscous", "sujet": null, "attendu": true, "piege": false,
+     "attendu_requete": ["couscous"],
+     "texte": "Elle nous a fait un couscous royal la dernière fois, avec l'agneau, les merguez, tout. Trois heures de cuisine."},
+
+    {"id": "o04-van-gogh", "sujet": null, "attendu": true, "piege": false,
+     "attendu_requete": ["nuit étoilée", "nuit etoilee", "van gogh"],
+     "texte": "Je suis tombé sur La Nuit étoilée de Van Gogh dans un bouquin, les spirales là, dans le ciel bleu."},
+
+    {"id": "o05-aurores", "sujet": null, "attendu": true, "piege": false,
+     "attendu_requete": ["aurore", "boréale", "boreale"],
+     "texte": "Il y avait des aurores boréales visibles depuis la Normandie la semaine dernière, tout le ciel était vert."}
+  ]
+}

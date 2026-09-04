@@ -1,0 +1,10 @@
+.venv/
+samples/
+*.png
+__pycache__/
+
+# Les enregistrements et leurs transcriptions sont des conversations PRIVÉES
+# d'Alex, captées dans son salon. Ils ne quittent jamais la machine, et surtout
+# pas vers un dépôt public. Cette ligne est une garantie, pas une commodité.
+corpus/
+*.wav

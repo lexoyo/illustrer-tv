@@ -1,0 +1,75 @@
+########## qwen25-05b ANCRÉ (requête limitée aux mots du bloc)
+  72.0 °C — on attend 60.0 °C…
+  66.6 °C — on attend 60.0 °C…
+  65.5 °C — on attend 60.0 °C…
+  65.5 °C — on attend 60.0 °C…
+  64.5 °C — on attend 60.0 °C…
+  65.0 °C — on attend 60.0 °C…
+  62.8 °C — on attend 60.0 °C…
+  62.3 °C — on attend 60.0 °C…
+  61.8 °C — on attend 60.0 °C…
+  62.3 °C — on attend 60.0 °C…
+  61.2 °C — on attend 60.0 °C…
+  60.7 °C — on attend 60.0 °C…
+  60.1 °C — on attend 60.0 °C…
+  60.1 °C — on attend 60.0 °C…
+départ à 59.6 °C · throttled=0x60000
+décideur local prêt (qwen25-05b-q4.gguf, préfixe lu en 90.0 s)
+  ok  n01-diner               10.7s  non
+  ok  n02-opinion              8.1s  non
+  FP! n03-blague              13.9s  OUI chat morts dit morts
+  ok  n04-tronque              6.5s  non
+  ok  n05-sentiment            7.7s  non
+  ok  n06-train               10.1s  non
+  ok  n07-abstrait             5.9s  non
+  ok  n08-vague                8.9s  non
+  ok  n09-deja-affiche        14.0s  non
+  FP! n10-tarifs              15.6s  OUI tarifs augmenté quinze pour
+  ok  n11-agenda               8.1s  non
+  FP! n12-lieu-logistique     13.3s  OUI place Gambetta pharmacie pharmacie
+  ok  o01-colisee             18.0s  OUI Colisée Rome allés dernier  [requête juste]
+  ok  o02-axolotl             18.0s  OUI pattes des avec des  [requête à côté]
+  FN  o03-couscous            23.5s  non
+  FN  o04-van-gogh             0.0s  non
+  FN  o05-aurores              0.0s  non
+{
+ "modele": "qwen25-05b-q4.gguf",
+ "threads": 4,
+ "ancrage": true,
+ "prefixe_s": 90.0,
+ "n": 17,
+ "n_non": 12,
+ "n_oui": 5,
+ "faux_positifs": 3,
+ "faux_positifs_ids": [
+  "n03-blague",
+  "n10-tarifs",
+  "n12-lieu-logistique"
+ ],
+ "faux_negatifs": 3,
+ "faux_negatifs_ids": [
+  "o03-couscous",
+  "o04-van-gogh",
+  "o05-aurores"
+ ],
+ "justesse": 0.647,
+ "rappel_oui": 2,
+ "requetes_pertinentes": 1,
+ "erreurs": 3,
+ "latence_med_s": 10.1,
+ "latence_max_s": 23.5,
+ "temp_fin": 75.8,
+ "throttled": "throttled=0x60000"
+}
+→ /tmp/res-qwen-ancre.json
+########## console
+[sudo] password for lexoyo: setterm: unknown: unknown terminal type
+blank = 0  (0 = écran allumé)
+console prête. Rien n'est persistant : un reboot remet tout par défaut.
+########## BOUT EN BOUT
+→ synthèse piper…
+./bout-en-bout.sh: line 34:  5391 Done                    printf '%s\n' "$TEXTE"
+      5392 Aborted                 | LD_LIBRARY_PATH=~/bench/piper/piper "$PIPER" --model "$VOIX" --output_file "$OUT/parole.wav" 2> /dev/null
+fb   : vc4drmfb 1920x1080 16bpp stride=3840 (utile=3840) R@11/5 G@5/6 B@0/5
+écrit : /tmp/bout-en-bout/ecran.png (1920, 1080)
+########## FINI2

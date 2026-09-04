@@ -1,0 +1,118 @@
+########## qwen25-05b-q4
+  73.1 °C — on attend 60.0 °C…
+  65.5 °C — on attend 60.0 °C…
+  64.5 °C — on attend 60.0 °C…
+  62.3 °C — on attend 60.0 °C…
+  61.2 °C — on attend 60.0 °C…
+  61.8 °C — on attend 60.0 °C…
+  63.4 °C — on attend 60.0 °C…
+  62.8 °C — on attend 60.0 °C…
+  61.8 °C — on attend 60.0 °C…
+  61.2 °C — on attend 60.0 °C…
+départ à 59.1 °C · throttled=0x20000
+décideur local prêt (qwen25-05b-q4.gguf, préfixe lu en 87.7 s)
+  ok  n01-diner               10.5s  non
+  ok  n02-opinion              8.1s  non
+  FP! n03-blague              13.2s  OUI chat mort de rire
+  ok  n04-tronque              6.4s  non
+  ok  n05-sentiment            7.7s  non
+  ok  n06-train                9.8s  non
+  ok  n07-abstrait             6.0s  non
+  ok  n08-vague                8.7s  non
+  ok  n09-deja-affiche        15.0s  non
+  FP! n10-tarifs              14.1s  OUI tarte Tatin auge deTarifs
+  ok  n11-agenda               8.3s  non
+  ok  n12-lieu-logistique      8.1s  non
+  ok  o01-colisee             15.9s  OUI Colisée Rome aube etnelle  [requête juste]
+  ok  o02-axolotl             17.6s  OUI axolotl bizarre et rose  [requête juste]
+  ok  o03-couscous            15.6s  OUI Couscous royal la dernièrefois  [requête juste]
+  ok  o04-van-gogh            17.1s  OUI La Nuit étoilée VanGogh  [requête juste]
+  ok  o05-aurores             15.5s  OUI aurores boréales visibles depuis-la-n  [requête juste]
+{
+ "modele": "qwen25-05b-q4.gguf",
+ "threads": 4,
+ "prefixe_s": 87.7,
+ "n": 17,
+ "n_non": 12,
+ "n_oui": 5,
+ "faux_positifs": 2,
+ "faux_positifs_ids": [
+  "n03-blague",
+  "n10-tarifs"
+ ],
+ "faux_negatifs": 0,
+ "faux_negatifs_ids": [],
+ "justesse": 0.882,
+ "rappel_oui": 5,
+ "requetes_pertinentes": 5,
+ "erreurs": 0,
+ "latence_med_s": 10.5,
+ "latence_max_s": 17.6,
+ "temp_fin": 84.4,
+ "throttled": "throttled=0x60002"
+}
+→ /tmp/res-qwen25-05b-q4.json
+########## smollm2-360m-q4
+  83.8 °C — on attend 60.0 °C…
+  69.8 °C — on attend 60.0 °C…
+  68.2 °C — on attend 60.0 °C…
+  66.1 °C — on attend 60.0 °C…
+  65.5 °C — on attend 60.0 °C…
+  64.5 °C — on attend 60.0 °C…
+  64.5 °C — on attend 60.0 °C…
+  65.5 °C — on attend 60.0 °C…
+  63.4 °C — on attend 60.0 °C…
+  62.3 °C — on attend 60.0 °C…
+  62.8 °C — on attend 60.0 °C…
+  61.2 °C — on attend 60.0 °C…
+  60.7 °C — on attend 60.0 °C…
+  60.7 °C — on attend 60.0 °C…
+  60.1 °C — on attend 60.0 °C…
+  60.1 °C — on attend 60.0 °C…
+départ à 59.1 °C · throttled=0x60000
+décideur local prêt (smollm2-360m-q4.gguf, préfixe lu en 101.6 s)
+  ok  n01-diner               14.3s  non
+  ok  n02-opinion             10.2s  non
+  ok  n03-blague              11.9s  non
+  ok  n04-tronque              8.5s  non
+  ok  n05-sentiment            9.7s  non
+  ok  n06-train               11.8s  non
+  ok  n07-abstrait             8.8s  non
+  ok  n08-vague               10.7s  non
+  ok  n09-deja-affiche        11.3s  non
+  ok  n10-tarifs               9.7s  non
+  ok  n11-agenda              10.7s  non
+  ok  n12-lieu-logistique      9.8s  non
+  FN  o01-colisee             12.5s  non
+  FN  o02-axolotl             13.9s  non
+  FN  o03-couscous            12.7s  non
+  FN  o04-van-gogh            10.9s  non
+  FN  o05-aurores             11.6s  non
+{
+ "modele": "smollm2-360m-q4.gguf",
+ "threads": 4,
+ "prefixe_s": 101.6,
+ "n": 17,
+ "n_non": 12,
+ "n_oui": 5,
+ "faux_positifs": 0,
+ "faux_positifs_ids": [],
+ "faux_negatifs": 5,
+ "faux_negatifs_ids": [
+  "o01-colisee",
+  "o02-axolotl",
+  "o03-couscous",
+  "o04-van-gogh",
+  "o05-aurores"
+ ],
+ "justesse": 0.706,
+ "rappel_oui": 0,
+ "requetes_pertinentes": 0,
+ "erreurs": 0,
+ "latence_med_s": 10.9,
+ "latence_max_s": 14.3,
+ "temp_fin": 84.9,
+ "throttled": "throttled=0x60002"
+}
+→ /tmp/res-smollm2-360m-q4.json
+########## FINI

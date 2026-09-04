@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""Écoute la pièce et illustre sur la télé ce dont on parle.
+
+Un cycle : 45 s de micro → whisper → un LLM qui décide s'il y a quelque chose à
+montrer → recherche d'image → framebuffer.
+
+**Le décideur est local par défaut** (`--decideur local`, `decideur_local.py`) :
+ce qu'on lui donne à lire, c'est la transcription d'une conversation privée, et
+elle ne doit pas quitter la machine. La voie distante reste là, derrière
+`--decideur distant`, uniquement pour comparer les deux sur les mêmes blocs —
+l'utiliser envoie la transcription à un tiers, et le journal le dit.
+
+**Le temps réel n'est pas un objectif, et c'est la décision qui tient tout le
+reste.** On transcrit un bloc pendant que le suivant n'est pas capturé, donc on
+rate environ la moitié de ce qui se dit. Assumé : le sujet d'une conversation
+survit à un trou de 40 s, et c'est ce qui permet de tenir sur un Pi 3B sans
+jamais courir après l'horloge. Un ASR en flux (sherpa) entendrait tout, au prix
+d'un texte sans ponctuation et d'une machinerie qu'on n'a pas besoin de payer.
+"""
+import argparse
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fb as fbmod
+
+BLOC_S = 45
+# ⚠ `tiny` est DISQUALIFIÉ, mesuré le 04/09/2026 sur un vrai enregistrement du
+# micro : il rend « les élèves fonds d'Asie » là où `base` rend « les éléphants
+# d'Asie ». **Les noms concrets ne survivent pas** — or ce sont exactement eux que
+# le décideur cherche. `base` q5 est le modèle du projet ; il n'est pas encore
+# installé sur le Pi, et ce chemin reste donc celui d'une chaîne qu'on sait
+# fausse. À corriger avant toute mesure de qualité de bout en bout.
+MODELE_STT = Path.home() / "microturn/models/ggml-tiny-q5_1.bin"
+MODELE_LLM = "google/gemini-2.5-flash-lite"   # le défaut mesuré de microturn
+MODELE_LOCAL = Path.home() / "bench/models/qwen25-05b-q4.gguf"
+FENETRE = 3                                    # blocs de contexte gardés (~2 min)
+UA = "illustrer-tv/0.1 (prototype; alex@lexoyo.me)"
+CHRONO = time.monotonic
+
+
+def journal(msg):
+    print(f"{time.strftime('%H:%M:%S')}  {msg}", flush=True)
+
+
+def temperature():
+    """La grandeur à surveiller : ce Pi bride à 80 °C, et whisper le chauffe."""
+    try:
+        out = subprocess.run(["/usr/bin/vcgencmd", "measure_temp"],
+                             capture_output=True, text=True, timeout=5).stdout
+        return float(re.search(r"([\d.]+)", out).group(1))
+    except Exception:
+        return float("nan")
+
+
+# ---------------------------------------------------------------- capture
+def carte_micro(motif=None):
+    """Trouve la carte ALSA par son NOM.
+
+    L'index n'est pas stable : ce micro est passé de card 1 à card 2 entre deux
+    redémarrages. Un script figé sur `hw:2,0` casse au reboot suivant."""
+    motif = motif or os.environ.get("ILLUSTRER_MIC", "0x46d")
+    out = subprocess.run(["arecord", "-l"], capture_output=True, text=True).stdout
+    for ligne in out.splitlines():
+        m = re.match(r"card (\d+):", ligne)
+        if m and motif in ligne:
+            return int(m.group(1))
+    raise RuntimeError(f"aucune carte de capture ne contient {motif!r} :\n{out}")
+
+
+def enregistrer(dest, secondes, carte):
+    """Le micro de la webcam est figé en 16 kHz mono — le format natif de
+    whisper. Aucune conversion, donc pas besoin de ffmpeg dans la boucle."""
+    subprocess.run(
+        ["arecord", "-q", "-D", f"plughw:{carte},0", "-f", "S16_LE",
+         "-r", "16000", "-c", "1", "-d", str(secondes), "-t", "wav", str(dest)],
+        check=True)
+
+
+# ------------------------------------------------------------ transcription
+class Transcripteur:
+    """whisper.cpp, modèle résident.
+
+    Le modèle charge en 0,33 s sur le Pi : le garder en vie ne change pas la
+    face du monde, mais le recharger à chaque cycle serait payer pour rien."""
+
+    def __init__(self, modele=MODELE_STT, threads=2):
+        from pywhispercpp.model import Model
+        # `temperature_inc=0` retire le repli de température, et `best_of=1` le
+        # beam search : c'est ce réglage qui fait passer whisper de 1,17 à 0,62
+        # de RTF sur cette machine. Les noms de ces paramètres dépendent de la
+        # version de pywhispercpp, d'où le repli sur le minimum vital.
+        base = dict(n_threads=threads, language="fr", translate=False,
+                    print_progress=False, print_realtime=False)
+        try:
+            self.m = Model(str(modele), greedy_best_of=1, temperature_inc=0.0, **base)
+        except (TypeError, ValueError) as e:
+            journal(f"⚠ réglages rapides refusés ({e}) — whisper tourne par défaut")
+            self.m = Model(str(modele), **base)
+
+    def __call__(self, wav):
+        return " ".join(s.text.strip() for s in self.m.transcribe(str(wav))).strip()
+
+
+# ---------------------------------------------------------------- décision
+CONSIGNE = """Tu écoutes une conversation dans une pièce. On te donne sa \
+transcription automatique : elle est imparfaite, parfois tronquée, et personne \
+ne s'adresse à toi.
+
+Ton seul travail : dire si un sujet CONCRET et VISUEL vient d'apparaître, qui \
+gagnerait à être montré sur l'écran de la pièce.
+
+Tu réponds par un objet JSON, et rien d'autre :
+  {"illustrer": false, "pourquoi": "en quelques mots"}
+  {"illustrer": true, "requete": "2 à 5 mots, comme une requête d'image", \
+"titre": "le sujet en 3 mots", "pourquoi": "en quelques mots"}
+
+Les règles, dans l'ordre :
+- SOIS AVARE. Par défaut, c'est non. Du bavardage, de l'organisation, des \
+opinions, des sentiments, des blagues : rien à illustrer.
+- Ce qui s'illustre : un lieu, un monument, un animal, un objet, un plat, une \
+personne célèbre, une œuvre, un phénomène naturel.
+- Si la transcription est trop abîmée pour que tu sois SÛR du sujet, c'est non. \
+Une image sans rapport est pire que pas d'image.
+- Ne répète pas le sujet déjà affiché. S'il n'y a rien de neuf, c'est non.
+- La requête décrit la CHOSE, pas la conversation : « tour Eiffel de nuit », \
+pas « ils parlent de Paris »."""
+
+
+def decider(texte, dernier_sujet, modele=MODELE_LLM, timeout=20):
+    import requests
+    cle = cle_openrouter()
+    contexte = CONSIGNE
+    if dernier_sujet:
+        contexte += f"\n\nSujet DÉJÀ affiché à l'écran : « {dernier_sujet} »."
+    r = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {cle}", "Content-Type": "application/json"},
+        json={"model": modele, "temperature": 0,
+              "response_format": {"type": "json_object"},
+              "messages": [{"role": "system", "content": contexte},
+                           {"role": "user", "content": texte}]},
+        timeout=timeout)
+    r.raise_for_status()
+    brut = r.json()["choices"][0]["message"]["content"]
+    # Le modèle encadre parfois son JSON de ```json — on prend le premier objet
+    # plutôt que d'exiger une sortie propre.
+    m = re.search(r"\{.*\}", brut, re.S)
+    if not m:
+        raise ValueError(f"réponse non JSON : {brut[:120]!r}")
+    return json.loads(m.group(0))
+
+
+def cle_openrouter():
+    """La clé de la machine d'abord ; le .env de microturn en secours (lecture
+    seule — ce dépôt appartient à une autre session)."""
+    p = Path.home() / ".config/openrouter.key"
+    if p.exists():
+        return p.read_text().strip()
+    env = Path.home() / "microturn/.env"
+    if env.exists():
+        m = re.search(r"OPENROUTER_API_KEY\s*=\s*(\S+)", env.read_text())
+        if m:
+            return m.group(1).strip("'\"")
+    raise RuntimeError("pas de clé OpenRouter (~/.config/openrouter.key)")
+
+
+# ------------------------------------------------------------------ image
+def chercher_image(requete, timeout=15):
+    """Wikimedia Commons d'abord, Openverse en secours. Les deux sans clé.
+
+    Commons impose un User-Agent identifiable : sans lui, les requêtes sont
+    refusées, et le refus ressemble à « aucun résultat »."""
+    import requests
+    api = "https://commons.wikimedia.org/w/api.php"
+    p = {"action": "query", "format": "json", "generator": "search",
+         "gsrsearch": f"{requete} filetype:bitmap", "gsrnamespace": "6",
+         "gsrlimit": "8", "prop": "imageinfo",
+         "iiprop": "url|mime|size", "iiurlwidth": "1920"}
+    try:
+        d = requests.get(api, params=p, headers={"User-Agent": UA},
+                         timeout=timeout).json()
+        for page in (d.get("query", {}).get("pages") or {}).values():
+            info = (page.get("imageinfo") or [{}])[0]
+            if info.get("mime") in ("image/jpeg", "image/png") and info.get("thumburl"):
+                return info["thumburl"], f"commons:{page.get('title', '?')}"
+    except Exception as e:
+        journal(f"   commons a échoué : {e}")
+    try:
+        d = requests.get("https://api.openverse.org/v1/images/",
+                         params={"q": requete, "page_size": 5},
+                         headers={"User-Agent": UA}, timeout=timeout).json()
+        for r in d.get("results") or []:
+            if r.get("url"):
+                return r["url"], f"openverse:{r.get('title', '?')}"
+    except Exception as e:
+        journal(f"   openverse a échoué : {e}")
+    return None, None
+
+
+def telecharger(url, timeout=20):
+    import requests
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=timeout)
+    r.raise_for_status()
+    return r.content
+
+
+def afficher(octets, ecran):
+    from PIL import Image
+    img = Image.open(io.BytesIO(octets))
+    img.load()
+    ecran.show_image(img)
+
+
+# ------------------------------------------------------------------- boucle
+def cycle(n, ecran, stt, etat, args, trace):
+    t = {}
+    wav = trace / f"{n:04d}.wav" if trace else Path("/tmp/illustrer-bloc.wav")
+    if args.wav:
+        # Un bloc pris dans un fichier au lieu du micro. C'est ce qui rend un
+        # cycle complet REJOUABLE : sans ça, mesurer la chaîne demande quelqu'un
+        # qui parle dans la pièce, et deux mesures ne portent jamais sur le même
+        # son. Le reste du cycle est identique, micro compris dans le chrono.
+        wav = Path(args.wav)
+        t["micro"] = 0.0
+    else:
+        d = CHRONO(); enregistrer(wav, args.bloc, etat["carte"]); t["micro"] = CHRONO() - d
+    d = CHRONO(); texte = stt(wav);                           t["stt"] = CHRONO() - d
+    journal(f"[{n}] {t['stt']:.1f}s stt · {temperature():.1f}°C · {texte[:70]!r}")
+    if len(texte) < 15:
+        journal("    rien d'audible, on passe")           # bloc quasi muet
+        return
+    etat["fenetre"] = (etat["fenetre"] + [texte])[-FENETRE:]
+    d = CHRONO(); verdict = etat["decide"]("\n".join(etat["fenetre"]),
+                                          etat["sujet"]); t["llm"] = CHRONO() - d
+    if trace:
+        (trace / f"{n:04d}.json").write_text(json.dumps(
+            {"texte": texte, "verdict": verdict, "temps": t},
+            ensure_ascii=False, indent=1))
+    if not verdict.get("illustrer"):
+        journal(f"    non ({t['llm']:.1f}s) — {verdict.get('pourquoi', '')}")
+        return
+    requete = verdict.get("requete", "").strip()
+    journal(f"    OUI ({t['llm']:.1f}s) « {requete} » — {verdict.get('pourquoi', '')}")
+    url, source = chercher_image(requete)
+    if not url:
+        journal("    aucune image trouvée")
+        return
+    d = CHRONO(); octets = telecharger(url); t["dl"] = CHRONO() - d
+    if ecran:
+        d = CHRONO(); afficher(octets, ecran); t["ecran"] = CHRONO() - d
+    if trace:
+        (trace / f"{n:04d}.jpg").write_bytes(octets)
+    etat["sujet"] = verdict.get("titre") or requete
+    journal(f"    affiché {source} ({len(octets)//1024} Ko, "
+            f"dl {t.get('dl', 0):.1f}s, écran {t.get('ecran', 0):.1f}s)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--bloc", type=int, default=BLOC_S, help="durée d'un bloc (s)")
+    ap.add_argument("--une-fois", action="store_true", help="un seul cycle")
+    ap.add_argument("--sans-ecran", action="store_true",
+                    help="ne rien afficher (mise au point du texte seule)")
+    ap.add_argument("--decideur", choices=("local", "distant"), default="local",
+                    help="local = llama.cpp sur cette machine, rien ne sort ; "
+                         "distant = OpenRouter (la transcription QUITTE la machine)")
+    ap.add_argument("--modele", default=MODELE_LLM,
+                    help="le modèle distant (--decideur distant)")
+    ap.add_argument("--modele-local", default=str(MODELE_LOCAL),
+                    help="le .gguf du décideur local")
+    ap.add_argument("--threads", type=int, default=2,
+                    help="whisper : au-delà de 2 le Pi bride plus qu'il ne gagne")
+    ap.add_argument("--threads-llm", type=int, default=4,
+                    help="le décideur local, lui, est seul à tourner : 4 cœurs")
+    ap.add_argument("--wav", metavar="FICHIER",
+                    help="lire ce wav 16 kHz mono au lieu du micro (mesure rejouable)")
+    ap.add_argument("--trace", metavar="DOSSIER",
+                    help="garder wav, texte, verdict et image de chaque cycle")
+    a = ap.parse_args()
+
+    trace = None
+    if a.trace:
+        trace = Path(a.trace) / time.strftime("%Y%m%d-%H%M%S")
+        trace.mkdir(parents=True)
+        journal(f"trace dans {trace}")
+
+    etat = {"fenetre": [], "sujet": None,
+            "carte": None if a.wav else carte_micro()}
+    # Le décideur est construit ici, pas appelé par son nom dans la boucle : les
+    # deux voies doivent rester interchangeables pour être comparables sur les
+    # mêmes blocs, et c'est le seul endroit où le choix se lit.
+    if a.decideur == "local":
+        import decideur_local
+        dec = decideur_local.Decideur(modele=a.modele_local,
+                                      threads=a.threads_llm, journal=journal)
+        etat["decide"] = dec
+        quoi = f"local {Path(a.modele_local).name} (rien ne sort de la machine)"
+    else:
+        dec = None
+        etat["decide"] = lambda t, s: decider(t, s, modele=a.modele)
+        quoi = f"DISTANT {a.modele} — la transcription quitte la machine"
+    source = f"wav {a.wav}" if a.wav else f"micro sur card {etat['carte']}"
+    journal(f"{source} · blocs de {a.bloc}s · décideur {quoi}")
+    journal(f"chargement de whisper ({MODELE_STT.name})…")
+    stt = Transcripteur(threads=a.threads)
+
+    ecran = None
+    if not a.sans_ecran:
+        journal(fbmod.unblank())
+        ecran = fbmod.Framebuffer()
+        journal(f"écran {ecran.info}")
+    try:
+        n = 0
+        while True:
+            n += 1
+            try:
+                cycle(n, ecran, stt, etat, a, trace)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                # Un cycle qui casse ne doit pas tuer la soirée : le réseau
+                # tombe, Commons renvoie du HTML, une image est corrompue.
+                journal(f"    ⚠ cycle {n} abandonné : {type(e).__name__}: {e}")
+            if a.une_fois:
+                break
+    except KeyboardInterrupt:
+        journal("arrêt")
+    finally:
+        if ecran:
+            ecran.close()
+        if dec is not None:
+            dec.fermer()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
