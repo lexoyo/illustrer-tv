@@ -4,8 +4,8 @@
 **Pourquoi ça existe.** La boucle est strictement séquentielle : `enregistrer`
 45 s, *puis* whisper, *puis* le décideur. **Rien n'enregistre pendant la
 transcription.** Le système entend donc 45 s sur ~122 en régime nominal (37 %) —
-et sur les cycles réels du 04/09 au soir, whisper est monté à 175 et 220 s, ce
-qui fait tomber la part écoutée à 20 %.
+et sur les cycles réels de la fin d'après-midi du 04/09, whisper est monté à 175
+puis 220 s, ce qui fait tomber la part écoutée à 20 %.
 
 C'est le compromis assumé du projet, mais il était **invisible** : Alex a parlé
 trois fois d'éléphants devant la télé sans réaction, parce que ses phrases sont
@@ -79,7 +79,7 @@ class Temoin:
     écrivains.
 
     **L'image dessous n'est pas redessinée.** On relit le rectangle avant de
-    dessiner, on le remet à l'extinction : 4,2 kio pour 46x46 px en RGB565, au
+    dessiner, on le remet à l'extinction : 4,0 kio pour 45x45 px en RGB565, au
     lieu des 369 ms d'un réaffichage complet — qui supposerait en plus d'avoir
     gardé la photo. Le fond n'est relu qu'une fois : rien ne peut le modifier
     pendant l'enregistrement, puisque la boucle n'affiche une image qu'après."""
@@ -128,7 +128,7 @@ class Temoin:
         Le fond ne bouge pas de toute la prise — la boucle n'affiche une image
         qu'après la transcription, donc jamais pendant que le témoin est
         allumé. L'animation se réduit alors à N images fixes rejouées en boucle,
-        et la seconde d'écoute ne coûte plus que N écritures de 4,1 kio."""
+        et la seconde d'écoute ne coûte plus que N écritures de 4,0 kio."""
         # Un cosinus, pas une rampe : il s'attarde sur le creux et sur la crête
         # et traverse vite entre les deux, ce qui se lit comme une respiration
         # et non comme un gradateur qui monte et descend.
@@ -208,8 +208,9 @@ def main() -> int:
         # le curseur de la console clignote tout seul en haut à gauche (8x2 px)
         # dès que `console.sh` n'a pas tourné depuis le dernier démarrage, et il
         # ferait échouer une comparaison plein écran sans rien dire du témoin.
-        zone = lambda: hashlib.sha256(
-            f.read_rect(t.x, t.y, t.w, t.h)).hexdigest()[:16]
+        def zone():
+            return hashlib.sha256(
+                f.read_rect(t.x, t.y, t.w, t.h)).hexdigest()[:16]
 
         avant = zone()
         t.allumer()
