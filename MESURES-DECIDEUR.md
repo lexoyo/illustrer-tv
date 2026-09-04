@@ -1,5 +1,19 @@
 # Le décideur en local sur le Pi — ce qui a été mesuré
 
+> ⚠️ **Document historique depuis le 04/09/2026 au soir.** Tout ce que ce banc a
+> construit — la consigne, les douze exemples, les huit catégories, la grammaire
+> GBNF, le préfixe en cache — a été **supprimé**. Le décideur reçoit désormais la
+> transcription du bloc et rien d'autre, et ce qu'il écrit part verbatim dans la
+> recherche d'image ; il ne décide plus s'il faut illustrer. La raison est une
+> soirée de six heures, 136 cycles et une seule image affichée : voir `JOURNAL.md`
+> § « 17h30 », et l'en-tête de `decideur_local.py` pour les mesures d'après.
+>
+> Ce qui survit d'ici et qu'il ne faut pas défaire : `llama-server` plutôt qu'un
+> process par bloc, le serveur lié à `127.0.0.1`, le contexte à 1024 tokens, et
+> la règle « jamais un score agrégé, les deux classes séparées ». Le reste se lit
+> comme le récit de ce qui a été essayé.
+
+
 Question posée : le `decider()` du prototype appelle un modèle distant, et ce
 qu'il lui envoie est la transcription d'une conversation privée. **Peut-on le
 remplacer par un modèle qui tourne sur le Pi, sans rien perdre de la retenue ?**
