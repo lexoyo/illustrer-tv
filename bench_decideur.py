@@ -3,11 +3,19 @@
 
     ./.venv/bin/python bench_decideur.py ~/bench/models/qwen25-05b-q4.gguf
 
-Le chiffre qui décide n'est pas la justesse globale : le jeu est déséquilibré
-exprès (12 « non » pour 5 « oui »), donc un modèle qui répond toujours non
-obtient 12/17 = 0,71 sans rien comprendre. **Ce qui tranche, ce sont les FAUX
-POSITIFS** — chacun est une image sans rapport sur la télé — puis, seulement
-ensuite, le rappel sur les « oui ».
+⚠️ **Ce banc ne mesure plus une décision, parce qu'il n'y en a plus.** Depuis le
+04/09/2026 au soir le modèle n'a plus ni consigne ni grammaire : on lui donne la
+transcription du bloc, ce qu'il écrit ensuite est la requête d'image, et
+`illustrer` vaut toujours vrai (cf. `decideur_local.py`). Les colonnes faux
+positifs / faux négatifs sont donc mortes, et l'`attendu` de `cas.json` avec
+elles.
+
+Ce qu'il mesure encore, et qui reste utile : **la latence par bloc** et **ce que
+le modèle écrit** sur des textes propres. Le jeu de 17 cas garde son intérêt de
+non-régression : ils sont courts et connus, donc un chiffre de latence qui bouge
+ici vient de la machine ou du modèle, pas du texte. Pour juger de ce que ça donne
+en vrai, il faut des blocs de longueur réelle — les 17 cas font 5 à 10 fois moins
+de tokens qu'un bloc de 45 s, et la latence en dépend directement.
 """
 import argparse, json, re, statistics, subprocess, sys, time
 from pathlib import Path
@@ -41,9 +49,6 @@ def main():
     ap.add_argument("--port", type=int, default=dl.PORT)
     ap.add_argument("--ctx", type=int, default=2048)
     ap.add_argument("--sortie", default=None, help="fichier JSON de résultats")
-    ap.add_argument("--ancrage", action="store_true",
-                    help="limiter la requête aux mots présents dans le bloc "
-                         "(mesuré : meilleures requêtes, +1 faux positif)")
     ap.add_argument("--attendre-froid", type=float, default=60.0,
                     help="ne pas commencer au-dessus de cette température")
     a = ap.parse_args()
@@ -57,52 +62,34 @@ def main():
         t = temp()
     print(f"départ à {t:.1f} °C · {throttled()}", flush=True)
 
-    d = dl.Decideur(modele=a.modele, threads=a.threads, port=a.port, ctx=a.ctx,
-                    ancrage=a.ancrage)
+    d = dl.Decideur(modele=a.modele, threads=a.threads, port=a.port, ctx=a.ctx)
     lignes, lat = [], []
     try:
         for c in cas:
             t0 = time.monotonic()
             try:
-                v = d(c["texte"], c["sujet"])
+                v = d(c["texte"])
                 err = None
             except Exception as e:
-                v, err = {"illustrer": False, "pourquoi": f"ERREUR {e}"}, str(e)
+                v, err = {"requete": ""}, str(e)
             dt = time.monotonic() - t0
             lat.append(dt)
-            got = bool(v.get("illustrer"))
             req = v.get("requete", "")
-            pertinent = None
-            if c["attendu"] and got:
-                pertinent = any(m in req.lower() for m in c.get("attendu_requete", []))
-            lignes.append({"id": c["id"], "attendu": c["attendu"], "obtenu": got,
-                           "requete": req, "pourquoi": v.get("pourquoi", ""),
-                           "pertinent": pertinent, "s": round(dt, 2),
-                           "piege": c.get("piege", False), "erreur": err,
-                           "temp": temp()})
-            marque = "ok " if got == c["attendu"] else ("FP!" if got else "FN ")
-            print(f"  {marque} {c['id']:22s} {dt:5.1f}s  "
-                  f"{'OUI ' + req if got else 'non'}"
-                  f"{'' if pertinent is None else ('  [requête juste]' if pertinent else '  [requête à côté]')}",
-                  flush=True)
+            lignes.append({"id": c["id"], "requete": req, "s": round(dt, 2),
+                           "erreur": err, "temp": temp()})
+            print(f"  {c['id']:22s} {dt:5.1f}s  {req!r}", flush=True)
     finally:
         d.fermer()
 
-    non = [l for l in lignes if not l["attendu"]]
-    oui = [l for l in lignes if l["attendu"]]
-    fp = [l for l in non if l["obtenu"]]
-    fn = [l for l in oui if not l["obtenu"]]
-    justes = [l for l in oui if l["obtenu"] and l["pertinent"]]
+    # Pas de score agrégé, et cette fois pour une raison de plus qu'avant : il
+    # n'y a plus de bonne réponse à laquelle comparer. Ce qui se lit ici, ce
+    # sont les latences et les requêtes, cas par cas — à l'œil.
     res = {
         "modele": Path(a.modele).name, "threads": a.threads,
-        "ancrage": a.ancrage,
-        "prefixe_s": round(d.chauffe_s, 1),
-        "n": len(lignes), "n_non": len(non), "n_oui": len(oui),
-        "faux_positifs": len(fp), "faux_positifs_ids": [l["id"] for l in fp],
-        "faux_negatifs": len(fn), "faux_negatifs_ids": [l["id"] for l in fn],
-        "justesse": round(sum(1 for l in lignes if l["obtenu"] == l["attendu"]) / len(lignes), 3),
-        "rappel_oui": round(len(oui) - len(fn), 3),
-        "requetes_pertinentes": len(justes),
+        "premiere_passe_s": round(d.chauffe_s, 1),
+        "n": len(lignes),
+        "n_predict": dl.N_PREDICT,
+        "requetes_vides": sum(1 for l in lignes if not l["requete"].strip()),
         "erreurs": sum(1 for l in lignes if l["erreur"]),
         "latence_med_s": round(statistics.median(lat), 1),
         "latence_max_s": round(max(lat), 1),
