@@ -193,9 +193,9 @@ def main() -> int:
             for _ in range(max(1, args.repeat)):
                 t_a = time.perf_counter()
                 if backend == "pillow":
-                    frame = decode_pillow(path, fbuf, args.quality, a.cadrage)
+                    frame = decode_pillow(path, fbuf, args.quality, args.cadrage)
                 else:
-                    frame = decode_ffmpeg(path, fbuf.info, ffmpeg, a.cadrage)
+                    frame = decode_ffmpeg(path, fbuf.info, ffmpeg, args.cadrage)
                 t_decode = time.perf_counter()
                 fbuf.write_frame(frame)
                 t_write = time.perf_counter()
