@@ -18,10 +18,12 @@ jamais courir après l'horloge. Un ASR en flux (sherpa) entendrait tout, au prix
 d'un texte sans ponctuation et d'une machinerie qu'on n'a pas besoin de payer.
 """
 import argparse
+import contextlib
 import io
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -30,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fb as fbmod
+import temoin as temoinmod
 
 BLOC_S = 45
 # ⚠ `tiny` est DISQUALIFIÉ, mesuré le 04/09/2026 sur un vrai enregistrement du
@@ -300,7 +303,13 @@ def cycle(n, ecran, stt, etat, args, trace):
         wav = Path(args.wav)
         t["micro"] = 0.0
     else:
-        d = CHRONO(); enregistrer(wav, args.bloc, etat["carte"]); t["micro"] = CHRONO() - d
+        # Le témoin est allumé exactement le temps de la prise, jamais plus :
+        # c'est sa seule utilité, faire voir les 45 s où parler sert à quelque
+        # chose au milieu des 80 à 220 s où la machine est sourde (temoin.py).
+        d = CHRONO()
+        with etat["temoin"]:
+            enregistrer(wav, args.bloc, etat["carte"])
+        t["micro"] = CHRONO() - d
     d = CHRONO(); texte = stt(wav);                           t["stt"] = CHRONO() - d
     journal(f"[{n}] {t['stt']:.1f}s stt · {temperature():.1f}°C · {texte[:70]!r}")
     texte = parole_utile(texte)
@@ -343,7 +352,18 @@ def cycle(n, ecran, stt, etat, args, trace):
             f"dl {t.get('dl', 0):.1f}s, écran {t.get('ecran', 0):.1f}s)")
 
 
+def arret_propre(signum, frame):
+    """systemd arrête le service par SIGTERM, que Python honore en tuant le
+    process **sans dérouler les `finally`**. Le témoin resterait alors peint sur
+    la télé — et pire, le cycle suivant relirait ce point comme s'il faisait
+    partie de l'image, puis le remettrait à chaque extinction : il deviendrait
+    permanent. On transforme donc le signal en KeyboardInterrupt, que la boucle
+    sait déjà traiter."""
+    raise KeyboardInterrupt
+
+
 def main():
+    signal.signal(signal.SIGTERM, arret_propre)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bloc", type=int, default=BLOC_S, help="durée d'un bloc (s)")
     ap.add_argument("--une-fois", action="store_true", help="un seul cycle")
@@ -393,10 +413,15 @@ def main():
     stt = Transcripteur(threads=a.threads)
 
     ecran = None
+    # `nullcontext` quand il n'y a pas d'écran (--sans-ecran) : le `with` de la
+    # boucle reste écrit une seule fois, sans « if » dans le chemin chaud.
+    etat["temoin"] = contextlib.nullcontext()
     if not a.sans_ecran:
         journal(fbmod.unblank())
         ecran = fbmod.Framebuffer()
         journal(f"écran {ecran.info}")
+        if not a.wav:                      # en rejeu il n'y a pas de micro à signaler
+            etat["temoin"] = temoinmod.Temoin(ecran)
     try:
         n = 0
         while True:

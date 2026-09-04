@@ -183,3 +183,71 @@ Deux détails relevés au passage : `setterm` se plaint de `$TERM is not defined
 sous systemd (sans conséquence, `blank=0` suffit), et l'API d'Openverse a
 dépassé son délai de 15 s — le repli de recherche est donc lent quand Commons ne
 trouve rien.
+
+## 2026-09-04, 17h — un témoin d'écoute, parce que les fenêtres sourdes étaient invisibles
+
+**Le problème n'était pas la boucle, c'était de ne pas la voir.** La chaîne est
+strictement séquentielle : `enregistrer` 45 s, *puis* whisper, *puis* le
+décideur. Rien n'enregistre pendant la transcription. En régime nominal ça fait
+45 s écoutées sur ~122, soit 37 % du temps — et sur les cycles réels de cette
+fin d'après-midi, whisper est monté à 175,8 s puis 220,3 s, ce qui fait tomber
+la part écoutée à 20 %.
+
+C'est le compromis assumé du projet depuis le premier jour. Ce qui ne l'était
+pas : **il ne se voit pas.** Alex a parlé trois fois d'éléphants devant la télé
+sans la moindre réaction, parce que ses phrases sont tombées dans les fenêtres
+sourdes. Dix minutes passées à parler dans le vide, sans aucun moyen de le
+savoir.
+
+**Le témoin** (`temoin.py`) : un disque ambre de 30 px, halo compris 45x45,
+posé en bas à droite pendant la prise et effacé dès qu'elle s'arrête. Il ne dit
+qu'une chose — *c'est maintenant qu'on peut parler*. Pas de niveau, pas de
+compteur, pas de texte : c'est un objet de salon, pas un instrument.
+
+**L'image dessous n'est jamais redessinée.** `fb.py` gagne `read_rect` /
+`write_rect` (conscients du stride) : on sauve les 4,1 kio du rectangle, on
+dessine, on les remet. Réafficher la photo aurait coûté 369 ms et supposé de
+l'avoir gardée en mémoire.
+
+**Ce que la première version coûtait, et pourquoi elle a été refaite** :
+composer une image du témoin coûte **2,39 ms** sur ce Pi, l'écrire **0,22 ms** —
+le calcul numpy sur 2 025 pixels est écrasé par son propre coût d'appel. À
+7,5 images/s recalculées, ça faisait **21,4 ms de CPU par seconde** d'écoute, sur
+une machine déjà bridée à 1,03 GHz par sa température. Le fond ne bouge
+pourtant pas de toute la prise : la boucle n'affiche une image qu'*après* la
+transcription. Le souffle est donc calculé **une fois à l'allumage** (24 images,
+~57 ms) puis rejoué en boucle. Mesuré sur un bloc de 45 s, cadre réel :
+**3,9 ms de CPU par seconde**, soit 0,4 % d'un cœur.
+
+**Un thread, pas une restructuration.** `enregistrer()` est un `subprocess.run`
+d'arecord de 45 s : il bloque, et il n'a aucune raison d'apprendre à dessiner.
+Le témoin s'écrit `with etat["temoin"]:` autour de la prise. Le risque de deux
+écrivains est nul : entre l'allumage et l'extinction, le thread principal attend
+arecord et ne touche pas au framebuffer.
+
+🔴 **Le piège qu'il a fallu boucher** : systemd arrête le service par SIGTERM,
+que Python honore en tuant le process **sans dérouler les `finally`**. Le point
+serait resté peint sur la télé — et au redémarrage, le premier allumage l'aurait
+relu comme s'il faisait partie de l'image, puis remis à chaque extinction : il
+serait devenu **permanent**. `ecouter.py` transforme donc SIGTERM en
+KeyboardInterrupt, que la boucle savait déjà traiter.
+
+**Vérifié sur le Pi**, `./temoin.py --verifier` (empreinte des pixels du témoin
+avant / pendant / après) :
+
+```
+zone    avant 9d0c4f6652855079 · pendant 224a606b43dca59c · après 9d0c4f6652855079
+VERDICT le témoin s'affiche, s'efface, et rend les pixels d'origine
+```
+
+Passé sur la mire, sur un écran noir (cas du démarrage, où aucune image n'a
+encore été affichée) et sur un fond clair. Les captures `grab.py` montrent le
+disque net sur les trois fonds : c'est le halo, une pénombre de 7 px à 60 %, qui
+le sauve sur un fond clair — sans lui il disparaît une fois sur deux selon la
+photo affichée dessous.
+
+Un détail relevé au passage : une comparaison **plein écran** échoue toujours,
+et pas à cause du témoin — le curseur de la console clignote tout seul en haut à
+gauche (8x2 px) dès que `console.sh` n'a pas tourné depuis le dernier
+démarrage. L'empreinte porte donc sur le rectangle du témoin, qui est la seule
+chose dont il répond.

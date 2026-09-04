@@ -115,8 +115,9 @@ dissipateur.
 | [`MESURES-DECIDEUR.md`](MESURES-DECIDEUR.md) | Le banc du décideur local |
 
 Le code : `ecouter.py` (la boucle, **jamais exécutée**), `decideur_local.py`,
-`fb.py` et `show.py` (l'affichage), `essai.py` (un cycle manuel de bout en bout),
-`cas.json` et `bench_decideur.py` (le banc).
+`fb.py` et `show.py` (l'affichage), `temoin.py` (le point qui dit quand le micro
+écoute), `essai.py` (un cycle manuel de bout en bout), `cas.json` et
+`bench_decideur.py` (le banc).
 
 ## Parenté
 

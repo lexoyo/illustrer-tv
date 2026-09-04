@@ -195,6 +195,43 @@ class Framebuffer:
         px = self.pack_pixel(rgb)
         self.write_frame(px * (self.info.xres * self.info.yres))
 
+    # -- rectangles -------------------------------------------------------
+    # Poser quelque chose SUR l'image affichée (un témoin, une légende) demande
+    # de pouvoir écrire un petit bout d'écran, et surtout de pouvoir relire les
+    # pixels d'origine avant de les écraser. Redessiner la photo entière serait
+    # l'autre solution : 369 ms par passage (AFFICHAGE.md) et il faudrait avoir
+    # gardé l'image en mémoire. Ici on sauve puis on remet quelques kio.
+    def _bornes(self, x: int, y: int, w: int, h: int) -> None:
+        i = self.info
+        if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > i.xres or y + h > i.yres:
+            raise ValueError(
+                f"rectangle ({x},{y},{w}x{h}) hors de l'écran {i.xres}x{i.yres}")
+
+    def read_rect(self, x: int, y: int, w: int, h: int) -> bytes:
+        """Relit un rectangle, ligne par ligne — le stride interdit un seul bloc."""
+        i = self.info
+        self._bornes(x, y, w, h)
+        pas = w * i.bytes_per_pixel
+        out = bytearray(pas * h)
+        for ligne in range(h):
+            off = (y + ligne) * i.line_length + x * i.bytes_per_pixel
+            out[ligne * pas:(ligne + 1) * pas] = self._map[off:off + pas]
+        return bytes(out)
+
+    def write_rect(self, x: int, y: int, w: int, h: int,
+                   data: bytes | bytearray | memoryview) -> None:
+        """Écrit un rectangle compact (w*h*bpp octets) à la position (x, y)."""
+        i = self.info
+        self._bornes(x, y, w, h)
+        pas = w * i.bytes_per_pixel
+        if len(data) != pas * h:
+            raise ValueError(f"{len(data)} octets, attendu {pas * h} ({w}x{h})")
+        vue = memoryview(data)
+        for ligne in range(h):
+            off = (y + ligne) * i.line_length + x * i.bytes_per_pixel
+            self._map[off:off + pas] = vue[ligne * pas:(ligne + 1) * pas]
+        self._map.flush()
+
     # -- conversion de pixels --------------------------------------------
     def pack_pixel(self, rgb: tuple[int, int, int]) -> bytes:
         """Un pixel RGB888 -> octets natifs du framebuffer (little-endian)."""
@@ -215,17 +252,52 @@ class Framebuffer:
         a = np.asarray(rgb_array)
         if a.shape[:2] != (i.yres, i.xres):
             raise ValueError(f"array {a.shape[:2]}, attendu {(i.yres, i.xres)}")
+        return self.pack_rgb(a)
+
+    def pack_rgb(self, rgb_array) -> bytes:
+        """Idem, mais de n'importe quelle taille — pour composer un rectangle.
+
+        `pack_array` exige le plein écran, ce qui est le bon garde-fou pour une
+        trame ; composer un témoin de 46x46 px passe par ici et évite de brasser
+        les 4,15 Mio d'une trame entière (dont 130 ms rien que de conversion,
+        cf. AFFICHAGE.md)."""
+        import numpy as np
+
+        i = self.info
+        a = np.asarray(rgb_array)
+        if a.ndim != 3 or a.shape[2] != 3:
+            raise ValueError(f"array {a.shape}, attendu (H, W, 3)")
         if i.bytes_per_pixel == 2:
-            acc = np.zeros((i.yres, i.xres), dtype=np.uint16)
+            acc = np.zeros(a.shape[:2], dtype=np.uint16)
             for ch, bf in enumerate((i.red, i.green, i.blue)):
                 acc |= (a[:, :, ch] >> (8 - bf.length)).astype(np.uint16) << bf.offset
             return acc.astype("<u2").tobytes()
         if i.bytes_per_pixel == 4:
-            acc = np.zeros((i.yres, i.xres), dtype=np.uint32)
+            acc = np.zeros(a.shape[:2], dtype=np.uint32)
             for ch, bf in enumerate((i.red, i.green, i.blue)):
                 acc |= (a[:, :, ch] >> (8 - bf.length)).astype(np.uint32) << bf.offset
             return acc.astype("<u4").tobytes()
         raise NotImplementedError(f"{i.bits_per_pixel} bpp non géré")
+
+    def unpack_rgb(self, data: bytes, size: tuple[int, int]):
+        """L'inverse de `pack_rgb` : octets natifs -> numpy (H, W, 3) uint8.
+
+        Nécessaire pour composer par transparence sur ce qui est DÉJÀ à l'écran
+        (le halo du témoin s'assombrit sur la photo, il ne la remplace pas)."""
+        import numpy as np
+
+        i = self.info
+        w, h = size
+        dtype = {2: "<u2", 4: "<u4"}.get(i.bytes_per_pixel)
+        if dtype is None:
+            raise NotImplementedError(f"{i.bits_per_pixel} bpp non géré")
+        a = np.frombuffer(data, dtype=dtype).reshape(h, w)
+        out = np.zeros((h, w, 3), dtype=np.uint8)
+        for ch, bf in enumerate((i.red, i.green, i.blue)):
+            v = ((a >> bf.offset) & ((1 << bf.length) - 1)).astype(np.uint16)
+            # remise à l'échelle exacte : 5 bits -> 0, 8, 16, …, 255
+            out[:, :, ch] = (v * 255 // ((1 << bf.length) - 1)).astype(np.uint8)
+        return out
 
     # -- image ------------------------------------------------------------
     def show_image(self, img, resample=None, cadrage="cover") -> None:
