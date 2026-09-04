@@ -88,11 +88,18 @@ dans le journal du service :
 | **6** | **2,1 s** | **10** |
 | 10 | 3,6 s | 7 |
 
-Contre 10,5 s de médiane au banc et 5 à 19 s en service avec l'ancien prompt :
-la lecture de la consigne était le poste principal sur un Cortex-A53, et elle a
-disparu. **Les deux colonnes disent la même chose** : plus la suite du modèle
-s'allonge, moins elle ressemble à une requête, parce qu'une phrase française
-entière ne rencontre aucun mot-clé de Commons.
+**Les deux colonnes disent la même chose** : plus la suite du modèle s'allonge,
+moins elle ressemble à une requête, parce qu'une phrase française entière ne
+rencontre aucun mot-clé de Commons.
+
+⚠️ **Ces latences sont un plancher, pas une prévision** : ces blocs sont les
+extraits du journal du service, tronqués à 70 caractères, alors qu'un vrai bloc
+de 45 s en fait 100 à 200 tokens. Sur un bloc de longueur réelle, en A/B/B/A
+contre l'ancien prompt (même bloc, même serveur, Pi stabilisé à 86 °C) :
+**32,8 s avant, 12,0 s après, un facteur 2,7.** Ce n'est pas la lecture du
+préfixe qui coûtait — `cache_prompt` la supprimait déjà — mais le fait que
+chaque token généré paie une attention sur tout le contexte : 693 tokens de
+profondeur et 14 à générer, contre 100 et 6.
 
 Le levier qui survit de tout ce banc : **`llama-server` au lieu d'un process par
 bloc**. La grammaire GBNF, les huit catégories et les douze exemples ont été

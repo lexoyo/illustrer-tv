@@ -366,23 +366,79 @@ montrés (`etat["vues"]`, 300 au plus). Vérifié : trois appels de suite sur
 `CHAINE`. Changer de moteur ne touche que ces deux noms. **Aucun moteur
 généraliste n'est écrit** : la place est préparée, rien de plus.
 
-### ⚠ Le chiffre de latence est un plancher, pas une prévision
+### ⚠ La latence : trois mesures, dont deux qui ne veulent rien dire
 
-Premier cycle réel avec le nouveau code, à 17h31 : bloc entendu, whisper 123 s,
-et **le modèle a mis 52,5 s**, contre 2,1 s de médiane au banc. La cause est
-dans le banc, pas dans le code : **mes 14 blocs sont les extraits du journal du
-service, tronqués à 70 caractères.** Un vrai bloc de 45 s de whisper en fait
-plusieurs centaines, et davantage encore quand whisper répète (celui-ci
-commençait par « - C'est pas par la… » quatre fois). Le prompt n'est plus les
-~600 tokens de la consigne, mais il n'est pas non plus les 12 à 28 tokens
-mesurés : c'est la longueur du bloc, et sur un Cortex-A53 la lire coûte toujours
-autant.
+**1. Le banc sur 14 blocs (1 à 6 s) est un plancher, pas une prévision.** Ces
+blocs sont les extraits du journal du service, **tronqués à 70 caractères**. Un
+vrai bloc de 45 s de whisper fait 100 à 200 tokens, et le premier cycle réel avec
+le nouveau code a mis **53,0 s**. Le prompt n'est plus les ~600 tokens de la
+consigne, mais il n'est pas non plus les 12 à 28 tokens du banc : c'est la
+longueur du bloc.
 
-Donc : **1 à 6 s sur des blocs courts, des dizaines de secondes sur un bloc long
-et répétitif.** L'ancien code avait exactement le même défaut (29,3 s relevées le
-matin sur un texte répété) et pour la même raison ; ce qui a disparu, c'est le
-préfixe fixe, pas le coût du bloc. La piste déjà notée le matin reste ouverte et
-n'a pas été suivie : **dédupliquer les phrases répétées avant l'appel.**
+**2. Le journal du service ne compare pas ce qu'il a l'air de comparer.** 70
+appels avec l'ancien prompt : médiane **19,1 s**, p90 62,3 s, max 95,7 s (et non
+10,5 s — le banc de `MESURES-DECIDEUR.md` tournait sur une machine qui ne
+transcrivait pas en même temps). Mais l'ancien code appelait le modèle sur des
+blocs quasi vides que la porte sonore écarte désormais : les deux populations de
+blocs sont différentes, et l'écart avant/après lu dans le journal ne mesure que
+ça.
+
+**3. La seule comparaison qui vaille : le MÊME bloc, le même `llama-server`, les
+deux prompts, en A/B/B/A pour annuler la dérive thermique.** Bloc de 357
+caractères, Pi stabilisé à 86 °C :
+
+| | passes | moyenne |
+|---|---|---|
+| AVANT — consigne + 12 exemples + grammaire, préfixe chaud | 80,3 / 32,8 / 33,9 / 31,7 s | 44,7 s |
+| **APRÈS — bloc nu, `n_predict` 6** | **12,1 / 12,0 / 11,9 / 11,9 s** | **12,0 s** |
+
+La première passe AVANT (80,3 s) est une collision avec le whisper du service ;
+les trois autres tiennent en 2 s d'écart. **Le rapport honnête est donc 32,8 s
+→ 12,0 s, un facteur 2,7**, et il est reproductible à 0,2 s près côté APRÈS.
+
+Ce n'est pas la lecture du préfixe qui coûtait — `cache_prompt` la supprimait
+déjà, c'était tout l'objet de `MESURES-DECIDEUR.md`. Ce qui coûte, c'est que
+**chaque token généré paie une attention sur tout le contexte** : 693 tokens de
+profondeur et 14 tokens à générer contre 100 et 6. Le prompt court est deux fois
+gagnant.
+
+🔴 **Et c'est une correction à ce que j'avais écrit plus haut dans cette même
+entrée** : sur le cas courant de l'ancien code — un « non » — la grammaire
+ramenait la génération à 2 tokens, et l'ancien prompt était alors *plus rapide*
+que le nouveau (3,2 s contre 1,6 s sur le bloc court… non, l'inverse ; mais 3,7 s
+contre 1,7 s à froid, l'écart est mince). L'ancien design n'était pas lent par
+bêtise. Ce qu'on a acheté ce soir, c'est un comportement, pas de la vitesse — et
+la vitesse est venue par-dessus, sur les blocs longs.
+
+**Ce qui domine tout, de très loin, c'est whisper et la température.** Sur les
+cinq cycles observés après le changement : 368,9 s, 78,9 s, 209,1 s et 416,1 s de
+transcription pour 45 s d'audio, à 82-86,5 °C. RTF 1,8 à 9,2. Le décideur, à 12 s
+ou à 53 s, ne se voit pas là-dedans.
+
+### Le déclencheur en service : les deux conditions tirent, et la porte sonore
+### est trop permissive pour cette pièce ce soir
+
+Cinq cycles observés après le déploiement, tous les cas de figure sont passés :
+
+| cycle | `fort` | ce qui s'est passé |
+|---|---|---|
+| [1] | -19,9 dBFS | parole → whisper 368,9 s → requête `. - On va faire tout` → **image changée** |
+| [2] | -29,3 dBFS | sous le seuil -28,8 → **pas de whisper du tout** |
+| [3] | -27,3 dBFS | passe la porte, whisper 78,9 s, rend `... ...` → pas de parole |
+| [4] | -27,8 dBFS | passe la porte, whisper 209,1 s, rend `[Musique]` → pas de parole |
+| [5] | -10,2 dBFS | parole → cycle complet |
+
+🔴 **Un seul bloc muet sur trois a été arrêté avant whisper.** Les deux autres
+sont passés à 0,5 et 1,0 dB au-dessus du seuil, et c'est `parole_utile` qui les a
+attrapés — après avoir payé 79 s et 209 s de transcription. Le gain « la pièce
+vide ne paie plus whisper » est donc réel mais **beaucoup plus petit qu'annoncé**
+ce soir dans cette pièce-là : le fond y est vivant (-27 à -29 dBFS de crête sans
+personne qui parle), pas le souffle plat des trois blocs de référence.
+
+Monter la marge au-dessus de 5 dB fermerait ces deux blocs — et rapprocherait le
+seuil de la voix la plus faible mesurée (4,7 dB de garde). Je ne l'ai pas fait :
+on ne règle pas un seuil sur cinq cycles, et le sens de l'erreur qu'Alex a choisi
+est celui-là — mieux vaut transcrire pour rien que rater quelqu'un qui parle.
 
 ### Ce qui ne marche pas, et c'est le résultat le plus important
 
