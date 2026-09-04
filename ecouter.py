@@ -38,7 +38,7 @@ BLOC_S = 45
 # le décideur cherche. `base` q5 est le modèle du projet ; il n'est pas encore
 # installé sur le Pi, et ce chemin reste donc celui d'une chaîne qu'on sait
 # fausse. À corriger avant toute mesure de qualité de bout en bout.
-MODELE_STT = Path.home() / "microturn/models/ggml-tiny-q5_1.bin"
+MODELE_STT = Path(__file__).parent / "models/ggml-base-q5_1.bin"
 MODELE_LLM = "google/gemini-2.5-flash-lite"   # le défaut mesuré de microturn
 MODELE_LOCAL = Path.home() / "bench/models/qwen25-05b-q4.gguf"
 FENETRE = 3                                    # blocs de contexte gardés (~2 min)
@@ -93,17 +93,17 @@ class Transcripteur:
 
     def __init__(self, modele=MODELE_STT, threads=2):
         from pywhispercpp.model import Model
-        # `temperature_inc=0` retire le repli de température, et `best_of=1` le
-        # beam search : c'est ce réglage qui fait passer whisper de 1,17 à 0,62
-        # de RTF sur cette machine. Les noms de ces paramètres dépendent de la
-        # version de pywhispercpp, d'où le repli sur le minimum vital.
-        base = dict(n_threads=threads, language="fr", translate=False,
-                    print_progress=False, print_realtime=False)
-        try:
-            self.m = Model(str(modele), greedy_best_of=1, temperature_inc=0.0, **base)
-        except (TypeError, ValueError) as e:
-            journal(f"⚠ réglages rapides refusés ({e}) — whisper tourne par défaut")
-            self.m = Model(str(modele), **base)
+        # PAS de greedy ici, et c'est mesuré : `-bo 1 -bs 1` fait tomber le RTF
+        # de 1,96 à ~1,2 sur cette machine, mais « architecture » devient
+        # « séptéculture ». Tout ce projet repose sur les noms concrets, donc le
+        # beam search par défaut n'est pas négociable.
+        #
+        # Une version antérieure passait `greedy_best_of` et `temperature_inc` :
+        # ces attributs n'existent pas dans pywhispercpp 1.5.1, et l'erreur est
+        # une AttributeError — que le repli ne rattrapait pas.
+        self.m = Model(str(modele), n_threads=threads, language="fr",
+                       translate=False, print_progress=False,
+                       print_realtime=False)
 
     def __call__(self, wav):
         return " ".join(s.text.strip() for s in self.m.transcribe(str(wav))).strip()
