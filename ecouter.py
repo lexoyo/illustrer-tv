@@ -189,11 +189,15 @@ def chercher_image(requete, timeout=15):
     try:
         d = requests.get(api, params=p, headers={"User-Agent": UA},
                          timeout=timeout).json()
+        candidats = []
         for page in (d.get("query", {}).get("pages") or {}).values():
             info = (page.get("imageinfo") or [{}])[0]
-            if not utilisable(info):
-                continue
-            return info["thumburl"], f"commons:{page.get('title', '?')}"
+            if utilisable(info):
+                candidats.append((rang(info), info, page.get("title", "?")))
+        if candidats:
+            candidats.sort(key=lambda c: c[0])
+            _, info, titre = candidats[0]
+            return info["thumburl"], f"commons:{titre}"
     except Exception as e:
         journal(f"   commons a échoué : {e}")
     try:
@@ -210,21 +214,34 @@ def chercher_image(requete, timeout=15):
 
 # L'écran est une télé : 1920×1080, donc du 16/9 posé à l'horizontale.
 LARGEUR_MIN = 1280      # en dessous, l'agrandissement se voit sur 1920 px
-RATIO_MIN = 1.2         # 1,0 = carré ; en dessous on est en portrait
+RATIO_PREFERE = 1.2     # 1,0 = carré ; en dessous on est en portrait
+RATIO_PLANCHER = 0.55   # plus étroit que ça, `cover` ne garde qu'un bandeau
 
 
 def utilisable(info):
-    """Écarte les portraits et les images trop petites.
-
-    Le cadrage `cover` remplit l'écran en rognant : sur un portrait, il ne
-    resterait qu'une bande verticale au milieu de l'image, souvent hors sujet.
-    Mieux vaut chercher plus loin dans les résultats que d'afficher ça."""
+    """Peut-on afficher cette image du tout ? Format, taille, et pas un rouleau."""
     if info.get("mime") not in ("image/jpeg", "image/png"):
         return False
     if not info.get("thumburl"):
         return False
     l, h = info.get("width") or 0, info.get("height") or 1
-    return l >= LARGEUR_MIN and l / h >= RATIO_MIN
+    return l >= LARGEUR_MIN and l / h >= RATIO_PLANCHER
+
+
+def rang(info):
+    """Ordre de préférence : le paysage d'abord, un portrait plutôt que rien.
+
+    La première version ÉCARTAIT les portraits. Alex a vu le contraire sur sa
+    télé — `cover` sur un portrait garde la bande centrale, ce qui donne un gros
+    plan quand le sujet est centré, et c'était mieux que l'image de référence.
+    Et le filtre coûtait cher : il ne laissait passer que cinq résultats sur
+    vingt. On classe donc au lieu d'exclure. Ne restent écartés que les rouleaux
+    (ratio sous 0,55), où il ne resterait qu'un bandeau vertical.
+
+    À ratio équivalent, la plus grande image gagne : elle survit mieux au
+    rognage."""
+    l, h = info.get("width") or 0, info.get("height") or 1
+    return (0 if l / h >= RATIO_PREFERE else 1, -l)
 
 
 def telecharger(url, timeout=20):
