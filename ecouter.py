@@ -42,6 +42,8 @@ MODELE_STT = Path(__file__).parent / "models/ggml-base-q5_1.bin"
 MODELE_LLM = "google/gemini-2.5-flash-lite"   # le défaut mesuré de microturn
 MODELE_LOCAL = Path.home() / "bench/models/qwen25-05b-q4.gguf"
 FENETRE = 3                                    # blocs de contexte gardés (~2 min)
+OUBLI = 12                                     # cycles avant qu'un sujet affiché
+                                               # cesse de bloquer les suivants
 UA = "illustrer-tv/0.1 (prototype; alex@lexoyo.me)"
 CHRONO = time.monotonic
 
@@ -107,6 +109,34 @@ class Transcripteur:
 
     def __call__(self, wav):
         return " ".join(s.text.strip() for s in self.m.transcribe(str(wav))).strip()
+
+
+# Whisper ÉTIQUETTE le bruit au lieu de se taire : « [Musique] », « *musique* »,
+# « [bruits de la porte] », « (rires) ». Ce ne sont pas des mots prononcés dans
+# la pièce — c'est sa façon de dire qu'il n'entend pas de parole.
+#
+# Le seuil `len(texte) < 15` ne les arrête pas : « [Musique] [Musique] » fait
+# dix-neuf caractères. Le 04/09, le bloc « de la même chose. [Musique] » a donc
+# atteint le décideur, qui a produit la requête « musique de la musique » et
+# affiché la Cité de la Musique — la seule image de la soirée, et elle est
+# fausse. Sur les 136 cycles de cette soirée, 95 ne contenaient QUE des
+# étiquettes ; 32 d'entre eux ont payé un appel au décideur (5 à 19 s à 81 °C)
+# pour rien.
+#
+# Le filtre audio ne remplace pas ce nettoyage : sur le même enregistrement de
+# pièce vide, whisper rend « *musique* » brut, « [Musique] [Bruit de feu] »
+# après passe-haut à 120 Hz, et « [Musique] » après passe-haut ET gain. C'est
+# du texte à jeter, pas du son à corriger.
+ETIQUETTE = re.compile(r"[\[(*][^\])*]{0,60}(?:[\])*]|$)")
+
+
+def parole_utile(texte):
+    """Ce qui reste du bloc une fois les étiquettes de bruit retirées.
+
+    On ne rabote la ponctuation qu'aux DEUX BOUTS : un premier jet nettoyait
+    aussi l'intérieur et « Montre-moi » y perdait son trait d'union."""
+    t = re.sub(r"\s+", " ", ETIQUETTE.sub(" ", texte)).strip(" .…·-–—,;:!?")
+    return t if re.search(r"\w", t) else ""
 
 
 # ---------------------------------------------------------------- décision
@@ -273,9 +303,19 @@ def cycle(n, ecran, stt, etat, args, trace):
         d = CHRONO(); enregistrer(wav, args.bloc, etat["carte"]); t["micro"] = CHRONO() - d
     d = CHRONO(); texte = stt(wav);                           t["stt"] = CHRONO() - d
     journal(f"[{n}] {t['stt']:.1f}s stt · {temperature():.1f}°C · {texte[:70]!r}")
+    texte = parole_utile(texte)
     if len(texte) < 15:
         journal("    rien d'audible, on passe")           # bloc quasi muet
         return
+
+    # Un sujet affiché finit par se périmer. Sans ça, une image posée par erreur
+    # bloque toutes les suivantes : le 04/09, « musique de la » a fait répondre
+    # « déjà à l'écran » neuf fois pendant cinq heures.
+    etat["age"] = etat.get("age", 0) + 1
+    if etat["sujet"] and etat["age"] > OUBLI:
+        journal(f"    on oublie « {etat['sujet']} » ({OUBLI} cycles)")
+        etat["sujet"] = None
+
     etat["fenetre"] = (etat["fenetre"] + [texte])[-FENETRE:]
     d = CHRONO(); verdict = etat["decide"]("\n".join(etat["fenetre"]),
                                           etat["sujet"]); t["llm"] = CHRONO() - d
@@ -298,6 +338,7 @@ def cycle(n, ecran, stt, etat, args, trace):
     if trace:
         (trace / f"{n:04d}.jpg").write_bytes(octets)
     etat["sujet"] = verdict.get("titre") or requete
+    etat["age"] = 0
     journal(f"    affiché {source} ({len(octets)//1024} Ko, "
             f"dl {t.get('dl', 0):.1f}s, écran {t.get('ecran', 0):.1f}s)")
 
