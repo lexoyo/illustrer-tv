@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """Écoute la pièce et illustre sur la télé ce dont on parle.
 
-Un cycle : 45 s de micro → whisper → un LLM qui décide s'il y a quelque chose à
+Un cycle : 45 s de micro → niveau sonore → whisper → un LLM qui dit QUOI
 montrer → recherche d'image → framebuffer.
+
+**Ce qui déclenche un changement d'image, ce sont deux conditions mécaniques et
+rien d'autre : du son au-dessus du fond de la pièce, ET des mots.** Le modèle ne
+décide plus s'il faut illustrer — décision d'Alex du 04/09/2026, prise après une
+soirée de six heures qui n'a produit qu'une seule image. Il n'a plus ni consigne
+ni grammaire : on lui donne la transcription du bloc, ce qu'il écrit ensuite
+devient la requête d'image verbatim. Le raisonnement complet et les mesures sont
+dans `decideur_local.py`.
+
+**Il n'y a plus non plus de règle « déjà à l'écran ».** C'est elle qui avait figé
+la télé cinq heures d'affilée. Quand la requête ramène des images déjà montrées,
+on en prend une AUTRE ; quand elle ne ramène rien, on laisse l'écran tranquille.
 
 **Le décideur est local par défaut** (`--decideur local`, `decideur_local.py`) :
 ce qu'on lui donne à lire, c'est la transcription d'une conversation privée, et
@@ -18,6 +30,7 @@ jamais courir après l'horloge. Un ASR en flux (sherpa) entendrait tout, au prix
 d'un texte sans ponctuation et d'une machinerie qu'on n'a pas besoin de payer.
 """
 import argparse
+import collections
 import contextlib
 import io
 import json
@@ -27,7 +40,6 @@ import signal
 import subprocess
 import sys
 import time
-import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -44,9 +56,6 @@ BLOC_S = 45
 MODELE_STT = Path(__file__).parent / "models/ggml-base-q5_1.bin"
 MODELE_LLM = "google/gemini-2.5-flash-lite"   # le défaut mesuré de microturn
 MODELE_LOCAL = Path.home() / "bench/models/qwen25-05b-q4.gguf"
-FENETRE = 3                                    # blocs de contexte gardés (~2 min)
-OUBLI = 12                                     # cycles avant qu'un sujet affiché
-                                               # cesse de bloquer les suivants
 UA = "illustrer-tv/0.1 (prototype; alex@lexoyo.me)"
 CHRONO = time.monotonic
 
@@ -87,6 +96,71 @@ def enregistrer(dest, secondes, carte):
         ["arecord", "-q", "-D", f"plughw:{carte},0", "-f", "S16_LE",
          "-r", "16000", "-c", "1", "-d", str(secondes), "-t", "wav", str(dest)],
         check=True)
+
+
+# ----------------------------------------------------------------- niveau
+# « Du son au-dessus du fond » : la première des deux conditions qui font
+# changer l'image (l'autre est `parole_utile`, plus bas). Mesurée sur le WAV
+# AVANT whisper — c'est ce qui permet de ne pas payer 70 à 220 s de
+# transcription pour une pièce vide, et le 04/09 la pièce était vide 95 cycles
+# sur 136.
+#
+# 🔴 **Un seuil absolu ne tient pas**, et c'est mesuré deux fois dans la même
+# pièce. Le 04/09 au matin le plancher était à -41 dBFS RMS ; le soir, trois
+# blocs de 45 s pris à vide donnent **-34,6 dBFS**. Six décibels d'écart d'un
+# jour à l'autre : une constante calée sur l'un classe tout de travers sur
+# l'autre.
+#
+# 🔴 **Et le RMS du bloc entier ne sépare rien du tout.** Les WAV de voix du
+# corpus (Alex à deux mètres) contre les trois blocs de pièce vide :
+#
+# | bloc | RMS global | p10 | p90 | p90 - p10 |
+# |---|---|---|---|---|
+# | pièce vide ×3 | -34,6 / -34,6 / -34,3 | -35,2 | -34,1 | **1,1** |
+# | base-01 (voix) | -35,7 | -41,2 | -31,5 | 9,7 |
+# | essai (voix) | -34,1 | -44,4 | -28,5 | 15,9 |
+# | ref-loin2 (voix) | -32,1 | -44,6 | -27,3 | 17,3 |
+# | ref-loin (voix) | -30,2 | -43,6 | -26,2 | 17,3 |
+#
+# Le RMS d'un bloc de voix (-30 à -36) recouvre ENTIÈREMENT celui d'un bloc vide
+# (-34,6) : une voix n'occupe qu'une fraction des 45 s, et la moyenne la noie.
+# Ce qui sépare, c'est l'écart entre les moments forts et le fond — 1,1 dB quand
+# la pièce souffle toute seule, 9,7 à 17,3 dB dès qu'une voix passe.
+#
+# D'où la mesure retenue : `fort` = p90 des trames de 200 ms du bloc, comparé à
+# un **plancher glissant** = 25e centile des `fond` (p10) des vingt derniers
+# blocs. Le 25e centile et pas la médiane : un quart de blocs calmes suffit à
+# tenir le plancher au niveau de la pièce, donc une longue conversation ne
+# referme pas la porte derrière elle. Et au tout premier bloc, faute
+# d'historique, le plancher est le p10 du bloc lui-même : le critère dégénère en
+# « écart interne au bloc », qui est justement le plus net des deux.
+TRAME_MS = 200          # assez long pour lisser une consonne, assez court pour
+                        # qu'une syllabe ne soit pas noyée dans 45 s de souffle
+MARGE_DB = 5.0          # entre 1,1 (pièce vide) et 9,7 (la voix la plus faible)
+MEMOIRE_FOND = 20       # ~40 min de pièce, le temps qu'un fond dérive
+
+
+def niveau(wav):
+    """(fort, fond) du bloc en dBFS : p90 et p10 des trames de 200 ms."""
+    import wave
+    import numpy as np
+    with wave.open(str(wav), "rb") as w:
+        sr, n = w.getframerate(), w.getnframes()
+        x = np.frombuffer(w.readframes(n), dtype="<i2").astype(np.float32) / 32768.0
+    k = int(sr * TRAME_MS / 1000)
+    if len(x) < k:
+        return float("nan"), float("nan")
+    trames = x[:len(x) // k * k].reshape(-1, k)
+    db = 20 * np.log10(np.sqrt((trames * trames).mean(axis=1)) + 1e-9)
+    return float(np.percentile(db, 90)), float(np.percentile(db, 10))
+
+
+def plancher(fonds):
+    """Le niveau de la pièce quand personne ne parle, tel qu'on l'a vu récemment."""
+    import numpy as np
+    if len(fonds) < 4:
+        return min(fonds)          # trop tôt pour un centile : on prend au plus bas,
+    return float(np.percentile(list(fonds), 25))   # donc au plus permissif
 
 
 # ------------------------------------------------------------ transcription
@@ -143,52 +217,34 @@ def parole_utile(texte):
 
 
 # ---------------------------------------------------------------- décision
-CONSIGNE = """Tu écoutes une conversation dans une pièce. On te donne sa \
-transcription automatique : elle est imparfaite, parfois tronquée, et personne \
-ne s'adresse à toi.
+# **Il n'y a plus de consigne.** La voie distante suit la voie locale à la
+# lettre (`decideur_local.py`, qui porte le raisonnement et les mesures) : on
+# envoie la transcription du bloc et rien d'autre, et ce que le modèle écrit
+# devient la requête d'image, verbatim. Les deux voies doivent rester
+# interchangeables sur les mêmes blocs, sinon les comparer ne veut plus rien
+# dire — c'est une règle du projet depuis le premier jour.
+#
+# `response_format: json_object` est parti avec la consigne : sans schéma à
+# remplir, exiger du JSON n'aurait plus rien à décrire.
+def decider(texte, *_, modele=MODELE_LLM, timeout=20, jetons=32):
+    """Même contrat que `decideur_local.Decideur` : la transcription entre, la
+    suite du modèle sort verbatim, et `illustrer` est toujours vrai.
 
-Ton seul travail : dire si un sujet CONCRET et VISUEL vient d'apparaître, qui \
-gagnerait à être montré sur l'écran de la pièce.
-
-Tu réponds par un objet JSON, et rien d'autre :
-  {"illustrer": false, "pourquoi": "en quelques mots"}
-  {"illustrer": true, "requete": "2 à 5 mots, comme une requête d'image", \
-"titre": "le sujet en 3 mots", "pourquoi": "en quelques mots"}
-
-Les règles, dans l'ordre :
-- SOIS AVARE. Par défaut, c'est non. Du bavardage, de l'organisation, des \
-opinions, des sentiments, des blagues : rien à illustrer.
-- Ce qui s'illustre : un lieu, un monument, un animal, un objet, un plat, une \
-personne célèbre, une œuvre, un phénomène naturel.
-- Si la transcription est trop abîmée pour que tu sois SÛR du sujet, c'est non. \
-Une image sans rapport est pire que pas d'image.
-- Ne répète pas le sujet déjà affiché. S'il n'y a rien de neuf, c'est non.
-- La requête décrit la CHOSE, pas la conversation : « tour Eiffel de nuit », \
-pas « ils parlent de Paris »."""
-
-
-def decider(texte, dernier_sujet, modele=MODELE_LLM, timeout=20):
+    `jetons` vaut 32 et non 6 comme en local : ici la latence est celle du
+    réseau, pas d'une génération à 3 t/s sur un Cortex-A53, et la borne n'est
+    plus là que pour empêcher un modèle bavard de raconter la soirée."""
     import requests
     cle = cle_openrouter()
-    contexte = CONSIGNE
-    if dernier_sujet:
-        contexte += f"\n\nSujet DÉJÀ affiché à l'écran : « {dernier_sujet} »."
     r = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={"Authorization": f"Bearer {cle}", "Content-Type": "application/json"},
-        json={"model": modele, "temperature": 0,
-              "response_format": {"type": "json_object"},
-              "messages": [{"role": "system", "content": contexte},
-                           {"role": "user", "content": texte}]},
+        json={"model": modele, "temperature": 0, "max_tokens": jetons,
+              "messages": [{"role": "user", "content": texte}]},
         timeout=timeout)
     r.raise_for_status()
-    brut = r.json()["choices"][0]["message"]["content"]
-    # Le modèle encadre parfois son JSON de ```json — on prend le premier objet
-    # plutôt que d'exiger une sortie propre.
-    m = re.search(r"\{.*\}", brut, re.S)
-    if not m:
-        raise ValueError(f"réponse non JSON : {brut[:120]!r}")
-    return json.loads(m.group(0))
+    return {"illustrer": True,
+            "requete": r.json()["choices"][0]["message"]["content"],
+            "pourquoi": "sans consigne (distant)"}
 
 
 def cle_openrouter():
@@ -206,43 +262,84 @@ def cle_openrouter():
 
 
 # ------------------------------------------------------------------ image
-def chercher_image(requete, timeout=15):
-    """Wikimedia Commons d'abord, Openverse en secours. Les deux sans clé.
+# **Un moteur = une fonction `requete -> [(url, identifiant), …]`, du meilleur au
+# pire.** Deux raisons pour cette forme, et aucune n'est de l'élégance :
+#
+# 1. **Changer de moteur ne doit toucher qu'ici.** Commons et Openverse sont des
+#    fonds documentaires indexés par mots-clés : ils rendent « rien » dès que la
+#    requête est bancale. Mesuré le 04/09 sur 14 blocs réels avec le décideur nu,
+#    4 requêtes sur 14 ne ramènent rien du tout, et l'écran reste alors figé — le
+#    défaut même qu'on est en train de corriger. Un moteur généraliste (Pexels,
+#    Unsplash, DuckDuckGo images) rend toujours quelque chose. Le jour où Alex
+#    bascule, il écrit une fonction, il l'ajoute à `MOTEURS`, il change `CHAINE` :
+#    la boucle ne bouge pas d'une ligne. **Aucun moteur généraliste n'est écrit
+#    ici — la place est préparée, rien de plus.**
+# 2. **Une LISTE de candidats, pas un seul.** « Même sujet, autre image » demande
+#    de pouvoir descendre dans le classement quand le premier a déjà été montré.
+#    Un moteur qui ne rendrait que son meilleur résultat rendrait la mémoire des
+#    images vues inutilisable.
 
-    Commons impose un User-Agent identifiable : sans lui, les requêtes sont
-    refusées, et le refus ressemble à « aucun résultat »."""
+
+def moteur_commons(requete, timeout):
+    """Wikimedia Commons. Sans clé, mais il impose un User-Agent identifiable :
+    sans lui les requêtes sont refusées, et le refus ressemble à « aucun
+    résultat »."""
     import requests
-    api = "https://commons.wikimedia.org/w/api.php"
-    # 20 résultats et non 8 : le filtre paysage + résolution en écarte
+    # 20 résultats et non 8 : le classement paysage + résolution en repousse
     # beaucoup, et il vaut mieux chercher large que se rabattre sur un portrait.
     p = {"action": "query", "format": "json", "generator": "search",
          "gsrsearch": f"{requete} filetype:bitmap", "gsrnamespace": "6",
          "gsrlimit": "20", "prop": "imageinfo",
          "iiprop": "url|mime|size", "iiurlwidth": "1920"}
-    try:
-        d = requests.get(api, params=p, headers={"User-Agent": UA},
-                         timeout=timeout).json()
-        candidats = []
-        for page in (d.get("query", {}).get("pages") or {}).values():
-            info = (page.get("imageinfo") or [{}])[0]
-            if utilisable(info):
-                candidats.append((rang(info), info, page.get("title", "?")))
-        if candidats:
-            candidats.sort(key=lambda c: c[0])
-            _, info, titre = candidats[0]
-            return info["thumburl"], f"commons:{titre}"
-    except Exception as e:
-        journal(f"   commons a échoué : {e}")
-    try:
-        d = requests.get("https://api.openverse.org/v1/images/",
-                         params={"q": requete, "page_size": 5},
-                         headers={"User-Agent": UA}, timeout=timeout).json()
-        for r in d.get("results") or []:
-            if r.get("url"):
-                return r["url"], f"openverse:{r.get('title', '?')}"
-    except Exception as e:
-        journal(f"   openverse a échoué : {e}")
+    d = requests.get("https://commons.wikimedia.org/w/api.php", params=p,
+                     headers={"User-Agent": UA}, timeout=timeout).json()
+    candidats = []
+    for page in (d.get("query", {}).get("pages") or {}).values():
+        info = (page.get("imageinfo") or [{}])[0]
+        if utilisable(info):
+            candidats.append((rang(info), info["thumburl"],
+                              f"commons:{page.get('title', '?')}"))
+    candidats.sort(key=lambda c: c[0])
+    return [(url, ident) for _, url, ident in candidats]
+
+
+def moteur_openverse(requete, timeout):
+    """Le secours quand Commons ne trouve rien. Il est lent : le 04/09 il a
+    dépassé les 15 s de délai, d'où l'ordre — Commons d'abord, toujours."""
+    import requests
+    d = requests.get("https://api.openverse.org/v1/images/",
+                     params={"q": requete, "page_size": 5},
+                     headers={"User-Agent": UA}, timeout=timeout).json()
+    return [(r["url"], f"openverse:{r.get('id') or r.get('title', '?')}")
+            for r in (d.get("results") or []) if r.get("url")]
+
+
+MOTEURS = {"commons": moteur_commons, "openverse": moteur_openverse}
+CHAINE = ("commons", "openverse")
+
+
+def chercher_image(requete, deja=(), chaine=CHAINE, timeout=15):
+    """La première image que cette pièce n'a pas déjà vue, ou (None, None).
+
+    L'identité d'une image est celle du FICHIER, jamais celle de la requête :
+    deux blocs qui produisent la même requête doivent pouvoir montrer deux
+    photos différentes — c'est exactement ce qu'Alex a demandé le 04/09 après
+    cinq heures d'écran figé. Rien trouvé de neuf = on ne touche pas à l'écran ;
+    l'image en place vaut mieux que pas d'image."""
+    for nom in chaine:
+        try:
+            for url, ident in MOTEURS[nom](requete, timeout):
+                if ident not in deja:
+                    return url, ident
+        except Exception as e:
+            journal(f"   {nom} a échoué : {e}")
     return None, None
+
+
+# Combien d'images on se souvient d'avoir montrées. 300, soit à peu près deux
+# soirées : au-delà on oublie les plus anciennes, et la plus ancienne est de
+# toute façon celle qu'on peut remontrer sans que ça se voie.
+VUES_MAX = 300
 
 
 # L'écran est une télé : 1920×1080, donc du 16/9 posé à l'horizontale.
@@ -310,44 +407,55 @@ def cycle(n, ecran, stt, etat, args, trace):
         with etat["temoin"]:
             enregistrer(wav, args.bloc, etat["carte"])
         t["micro"] = CHRONO() - d
+    # Le déclencheur, en deux conditions ET, décidées par Alex le 04/09 : du son
+    # au-dessus du fond de la pièce, et des mots. Rien d'autre — plus de « le
+    # modèle a-t-il trouvé un sujet », plus de « ce sujet est-il déjà à
+    # l'écran ». C'est cette dernière règle qui avait figé la télé cinq heures
+    # sur « musique de la », et le mécanisme d'oubli qui la rattrapait part avec
+    # elle : on ne rattrape pas une règle qu'on supprime.
+    fort, fond = niveau(wav)
+    if fort == fort:                     # NaN = WAV illisible : on ne bloque pas
+        etat["fonds"].append(fond)       # sur une mesure qu'on n'a pas
+        seuil = plancher(etat["fonds"]) + MARGE_DB
+        if fort < seuil:
+            journal(f"[{n}] {fort:.1f} dBFS sous le seuil {seuil:.1f} "
+                    f"(plancher {seuil - MARGE_DB:.1f}) — la pièce se tait, "
+                    f"pas de whisper")
+            return
     d = CHRONO(); texte = stt(wav);                           t["stt"] = CHRONO() - d
-    journal(f"[{n}] {t['stt']:.1f}s stt · {temperature():.1f}°C · {texte[:70]!r}")
+    journal(f"[{n}] {t['stt']:.1f}s stt · {temperature():.1f}°C · "
+            f"fort {fort:.1f} dBFS · {texte[:70]!r}")
     texte = parole_utile(texte)
-    if len(texte) < 15:
-        journal("    rien d'audible, on passe")           # bloc quasi muet
+    if not texte:
+        # Du son, mais whisper n'y a entendu que du bruit qu'il ÉTIQUETTE
+        # (« [Musique] », « [bruits de la porte] »). Ce ne sont pas des mots
+        # prononcés dans la pièce, et la deuxième condition n'est pas remplie.
+        journal("    du son, mais aucune parole — on passe")
         return
 
-    # Un sujet affiché finit par se périmer. Sans ça, une image posée par erreur
-    # bloque toutes les suivantes : le 04/09, « musique de la » a fait répondre
-    # « déjà à l'écran » neuf fois pendant cinq heures.
-    etat["age"] = etat.get("age", 0) + 1
-    if etat["sujet"] and etat["age"] > OUBLI:
-        journal(f"    on oublie « {etat['sujet']} » ({OUBLI} cycles)")
-        etat["sujet"] = None
-
-    etat["fenetre"] = (etat["fenetre"] + [texte])[-FENETRE:]
-    d = CHRONO(); verdict = etat["decide"]("\n".join(etat["fenetre"]),
-                                          etat["sujet"]); t["llm"] = CHRONO() - d
+    d = CHRONO(); verdict = etat["decide"](texte);            t["llm"] = CHRONO() - d
+    # Le modèle ne décide plus rien : `illustrer` est toujours vrai, et ce qu'il
+    # a écrit part tel quel dans la recherche. Ce qui est jeté, c'est la
+    # RECHERCHE quand elle ne trouve rien, plus jamais le bloc.
+    requete = verdict.get("requete", "")
+    journal(f"    ({t['llm']:.1f}s) requête {requete!r}")
     if trace:
         (trace / f"{n:04d}.json").write_text(json.dumps(
-            {"texte": texte, "verdict": verdict, "temps": t},
+            {"texte": texte, "verdict": verdict, "temps": t,
+             "fort": fort, "fond": fond},
             ensure_ascii=False, indent=1))
-    if not verdict.get("illustrer"):
-        journal(f"    non ({t['llm']:.1f}s) — {verdict.get('pourquoi', '')}")
-        return
-    requete = verdict.get("requete", "").strip()
-    journal(f"    OUI ({t['llm']:.1f}s) « {requete} » — {verdict.get('pourquoi', '')}")
-    url, source = chercher_image(requete)
+    url, source = chercher_image(requete, etat["vues"])
     if not url:
-        journal("    aucune image trouvée")
+        journal("    aucune image nouvelle — l'écran ne bouge pas")
         return
     d = CHRONO(); octets = telecharger(url); t["dl"] = CHRONO() - d
     if ecran:
         d = CHRONO(); afficher(octets, ecran); t["ecran"] = CHRONO() - d
     if trace:
         (trace / f"{n:04d}.jpg").write_bytes(octets)
-    etat["sujet"] = verdict.get("titre") or requete
-    etat["age"] = 0
+    etat["vues"][source] = None
+    while len(etat["vues"]) > VUES_MAX:
+        etat["vues"].popitem(last=False)
     journal(f"    affiché {source} ({len(octets)//1024} Ko, "
             f"dl {t.get('dl', 0):.1f}s, écran {t.get('ecran', 0):.1f}s)")
 
@@ -392,8 +500,12 @@ def main():
         trace.mkdir(parents=True)
         journal(f"trace dans {trace}")
 
-    etat = {"fenetre": [], "sujet": None,
-            "carte": None if a.wav else carte_micro()}
+    # `fonds` : les p10 des derniers blocs, d'où sort le plancher glissant.
+    # `vues` : les fichiers image déjà montrés, dans l'ordre — c'est ce qui
+    # permet de rendre une AUTRE image quand la requête ne change pas.
+    etat = {"carte": None if a.wav else carte_micro(),
+            "fonds": collections.deque(maxlen=MEMOIRE_FOND),
+            "vues": collections.OrderedDict()}
     # Le décideur est construit ici, pas appelé par son nom dans la boucle : les
     # deux voies doivent rester interchangeables pour être comparables sur les
     # mêmes blocs, et c'est le seul endroit où le choix se lit.
@@ -405,7 +517,7 @@ def main():
         quoi = f"local {Path(a.modele_local).name} (rien ne sort de la machine)"
     else:
         dec = None
-        etat["decide"] = lambda t, s: decider(t, s, modele=a.modele)
+        etat["decide"] = lambda t: decider(t, modele=a.modele)
         quoi = f"DISTANT {a.modele} — la transcription quitte la machine"
     source = f"wav {a.wav}" if a.wav else f"micro sur card {etat['carte']}"
     journal(f"{source} · blocs de {a.bloc}s · décideur {quoi}")

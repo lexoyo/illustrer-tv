@@ -1,146 +1,94 @@
 #!/usr/bin/env python3
 """Le décideur, en local sur le Pi — rien de la conversation ne sort de la machine.
 
-Même contrat que `ecouter.decider()`, mais servi par un `llama.cpp` local :
+    Decideur(...)(texte) -> {"illustrer": True, "requete": "<ce que le modèle a écrit>"}
 
-    Decideur(...)(texte, dernier_sujet) -> {"illustrer": bool, ...}
+**Il n'a plus de consigne, plus d'exemples, plus de catégories et plus de
+grammaire.** C'est une décision d'Alex du 04/09/2026 au soir, et elle défait
+exprès tout ce que `MESURES-DECIDEUR.md` avait construit. Ce qui l'a décidée est
+une soirée : six heures d'écoute, 136 cycles, **une seule image affichée**, et
+les trois « oui » du modèle étaient dégénérés — « musique de la musique »,
+« video de la vidéo », « tarte Tatin aube etApplication ». Sur « j'aime le
+vélo… au sacré cœur », il a rendu `oui|objet|vélo et vélo partageur` : il rate
+« Sacré-Cœur », le seul mot cherchable de la phrase, et invente « partageur »,
+absent de la transcription. Ce résultat-là coûtait ~600 tokens de préfixe et 5 à
+19 s par bloc.
 
-Trois choix portent tout le reste, et chacun vient d'une mesure faite sur ce Pi
-(cf. `MESURES-DECIDEUR.md`) :
+Ce qui reste tient en une ligne : **le prompt est la transcription du bloc, et
+ce que le modèle écrit ensuite est la requête d'image, verbatim.** Le modèle ne
+décide plus s'il faut illustrer — c'est `ecouter.py` qui déclenche, sur du son
+et des mots (cf. son § « niveau ») — il dit seulement quoi montrer. `illustrer`
+vaut donc TOUJOURS vrai dès qu'on l'a appelé, et le dict du contrat ne change
+pas pour autant : les deux voies, locale et distante, doivent rester
+interchangeables sur les mêmes blocs.
 
-1. **Un serveur, pas un appel par bloc.** Sur un Cortex-A53 la lecture du prompt
-   plafonne à 8-29 tokens/s selon le modèle. Une consigne avec ses exemples
-   pèse ~600 tokens : la relire à chaque bloc coûterait 20 à 75 s, plus le
-   rechargement du modèle. `llama-server` garde le cache KV du PRÉFIXE commun
-   d'un appel à l'autre — donc la consigne n'est lue qu'une fois, au démarrage,
-   et un bloc ne fait plus payer que ses ~80 tokens à lui. C'est un facteur 5
-   à 8 sur la latence, et c'est ce qui rend l'affaire jouable.
-   Corollaire : **ce qui varie d'un appel à l'autre doit être en FIN de prompt.**
-   Le sujet déjà affiché est donc après les exemples, pas dans la consigne.
+Ce que ça change, et ce que ça ne change pas — mesuré le 04/09/2026 sur ce Pi,
+14 blocs réels relevés dans le journal du service :
 
-2. **Une grammaire GBNF, pas du JSON demandé poliment.** Un modèle de 135 M à
-   500 M ne tient pas un format sur consigne. La grammaire rend le format
-   *impossible à rater* — et surtout elle réduit la génération à 1 token pour un
-   « non » (le cas courant) contre une trentaine pour un objet JSON complet.
-   Le format n'est pas du JSON : `non`, ou `oui|<catégorie>|<requête>`. Le JSON
-   du contrat est reconstruit en Python. La grammaire peut en plus être
-   RECONSTRUITE À CHAQUE BLOC pour n'autoriser, dans la requête, que des mots
-   présents dans la transcription (`ancrage=True`) — mesuré utile sur la requête,
-   mesuré CONTRE-PRODUCTIF sur la décision, donc pas le défaut. Cf. `grammaire()`
-   et `MESURES-DECIDEUR.md`.
+- **la latence tombe** : 1 à 6 s par bloc (2,1 s de médiane à n_predict=6)
+  contre 10,5 s de médiane au banc et 5 à 19 s en service. Le prompt ne pèse
+  plus 600 tokens mais 12 à 28, donc la lecture du prompt — le poste
+  principal sur un Cortex-A53, c'était le résultat n° 1 de `MESURES-DECIDEUR.md`
+  — a simplement disparu. Ce qui reste est de la génération pure.
+- **le modèle ne produit PAS des requêtes, il continue la conversation.** C'est
+  le résultat honnête de l'expérience, et il faut le lire avant de croire au
+  chiffre du dessus. Sur « J'aime le vélo… au sacré cœur partout », il écrit
+  « . C'est un bon moyen » ; sur les éléphants d'Asie, « C'est une propriété de
+  la ». Aucune de ces suites ne parle du sujet du bloc — un modèle de base
+  complète du texte, il ne le résume pas, et sans consigne il n'a aucune raison
+  de faire autre chose.
+- **l'écran bouge quand même, et c'est ce qui était demandé** : 10 de ces 14
+  suites trouvent une image sur Commons (contre 3 « oui » en 136 cycles avant).
+  Les images sont sans rapport avec la conversation — un mot de la suite tombe
+  sur un titre de Commons. « Se tromper d'image n'est pas grave, rester figé
+  l'est » : c'est le pari d'Alex, et il est tenu à la lettre.
 
-3. **La catégorie avant la requête.** Le modèle doit nommer la classe de ce
-   qu'il veut montrer, choisie dans une liste fermée, AVANT d'écrire la requête.
-   C'est le critère de retenue rendu obligatoire par la grammaire plutôt que
-   suggéré par la consigne.
+Ce qui SURVIT de `MESURES-DECIDEUR.md`, et qu'il ne faut pas défaire :
+`llama-server` plutôt qu'un process par bloc (le rechargement du modèle coûtait
+toujours autant), le serveur qui n'écoute que sur `127.0.0.1`, et le contexte à
+1024 tokens.
 """
 import json
 import os
-import re
 import signal
 import socket
 import subprocess
-import sys
 import time
 import urllib.request
 from pathlib import Path
 
 LLAMA_SERVER = Path(os.environ.get("ILLUSTRER_LLAMA_SERVER",
-                                  Path.home() / "lcpp/build/bin/llama-server"))
+                                   Path.home() / "lcpp/build/bin/llama-server"))
 MODELE = Path(os.environ.get("ILLUSTRER_MODELE_LOCAL",
                              Path.home() / "bench/models/qwen25-05b-q4.gguf"))
 PORT = int(os.environ.get("ILLUSTRER_PORT", "8099"))
 
-# ------------------------------------------------------------------ la consigne
-# Volontairement plus courte que `CONSIGNE` de ecouter.py : ce qu'un gros modèle
-# comprend d'une phrase abstraite (« sois avare »), un petit modèle ne l'apprend
-# que d'exemples. Le budget de tokens est donc mis dans les exemples.
-CONSIGNE = """\
-Tu lis la transcription d'une conversation dans une piece. Personne ne te parle.
-Tu dis s'il y a UNE chose concrete et visuelle a montrer sur l'ecran.
-Presque toujours la reponse est: non.
-non -- bavardage, organisation, opinions, sentiments, blagues, argent, rendez-vous,
-       phrase abimee ou tu n'es pas sur du sujet, sujet deja affiche, simple nom
-       de rue ou de gare cite en passant.
-oui -- un monument, un lieu remarquable, un animal, un objet, un plat, une
-       personne celebre, une oeuvre, un phenomene naturel, dont on PARLE VRAIMENT.
-Format: non
-    ou: oui|categorie|requete d'image de 2 a 4 mots decrivant la CHOSE
-"""
+# La SEULE borne qui reste, et ce n'est pas une consigne déguisée : le modèle
+# écrit ce qu'il veut, on limite seulement le temps qu'il a le droit d'y passer.
+# Sans borne, un 0,5 B qui reçoit du texte brut le CONTINUE, et il le continue
+# jusqu'au bout du contexte — 1024 tokens à ~3 t/s font six minutes pour un bloc
+# de 45 s.
+#
+# Mesuré le 04/09/2026, 14 blocs réels, Pi entre 72 et 86 °C :
+#
+# | n_predict | latence médiane | images trouvées /14 |
+# |---|---|---|
+# | 4  | 1,2 s | 11 |
+# | **6** | **2,1 s** | **10** |
+# | 10 | 3,6 s | 7 |
+#
+# Les deux colonnes vont dans le même sens et disent la même chose : plus la
+# suite est longue, moins elle ressemble à une requête. Une phrase française
+# entière ne rencontre aucun mot-clé de Commons ; trois mots, si. 4 et 6 sont à
+# égalité à un cas près, ce qui ne conclut rien sur 14 cas (règle du dépôt) ;
+# 6 est pris parce que 4 tronque au milieu d'un mot une fois sur trois
+# (« aveur de la », « ix, si tu »).
+N_PREDICT = 6
 
-# Exemples — aucun n'est repris du jeu de test `cas.json` (sinon la mesure ne
-# mesurerait que la mémoire du prompt). Neuf « non » pour trois « oui » : le
-# déséquilibre est la leçon à apprendre.
-EXEMPLES = [
-    ("Attends je te rappelle, la je suis dans le metro, on se capte apres.", "rien", "non"),
-    ("Il faudrait qu'on parte avant sept heures sinon on va se retrouver dans les bouchons.", "rien", "non"),
-    ("Moi je pense qu'il a completement tort sur ce coup-la, mais bon.", "rien", "non"),
-    ("mais du coup le... enfin tu vois le machin qu'on avait... bref laisse tomber.", "rien", "non"),
-    ("Elle a l'air vraiment contente de son nouveau boulot en tout cas.", "rien", "non"),
-    ("On a paye trois cents euros de plus que l'an dernier, tu te rends compte.", "rien", "non"),
-    ("Ils se sont mis a rire quand il est tombe de sa chaise, c'etait terrible.", "rien", "non"),
-    ("Je descends a Republique et je prends la ligne cinq apres.", "rien", "non"),
-    ("Le mont Fuji, c'est vraiment aussi impressionnant qu'on le dit ?", "Mont Fuji", "non"),
-    ("On a visite le Taj Mahal a l'aube, le marbre devient rose, c'est irreel.", "rien", "oui|monument|Taj Mahal aube"),
-    ("Il parait que le pangolin est le mammifere le plus braconne au monde.", "rien", "oui|animal|pangolin"),
-    ("Elle nous a sorti une tarte Tatin maison, avec les pommes caramelisees dessous.", "rien", "oui|plat|tarte Tatin"),
-]
-
-CATEGORIES = ["monument", "lieu", "animal", "objet", "plat", "personne", "oeuvre", "nature"]
-
-# La grammaire. Le découpage de la réponse ne peut pas être ambigu : `mot`
-# n'admet ni guillemet ni barre verticale. 4 mots au plus dans la requête —
-# au-delà, Commons renvoie moins de choses, pas plus.
-# Le " " initial n'est pas décoratif : les exemples s'écrivent « R: non », donc
-# à l'inférence le modèle doit pouvoir produire l'espace qu'il a vu douze fois.
-# Sans lui, la grammaire force « non » collé aux deux points — une forme que le
-# préfixe ne montre nulle part, et " non" est de toute façon UN seul token là où
-# ":"+"non" en fait deux.
-_ENTETE = ('root ::= " " ("non" | ("oui|" cat "|" requete))\n'
-           'cat ::= ' + " | ".join(f'"{c}"' for c in CATEGORIES) + "\n"
-           "requete ::= mot (\" \" mot){0,3}\n")
-_MOT_LIBRE = "mot ::= [A-Za-zÀ-ÖØ-öø-ÿ0-9'’\\-]{2,24}\n"
-
-
-def grammaire(texte=None):
-    """Sans `texte`, le modèle écrit la requête qu'il veut. Avec, il ne peut
-    choisir QUE des mots présents dans la transcription.
-
-    Mesuré sur `cas.json`, un modèle de cette taille recopie des morceaux de ses
-    propres exemples dans la requête (« tarte Tatin » pour un couscous). Ancrer
-    la requête dans les mots du bloc rend cette hallucination littéralement
-    improductible — et ça marche : plus un mot venu des exemples.
-
-    **Mais ce n'est PAS le défaut, et c'est une mesure qui le dit.** Sur les douze
-    « non » du jeu, l'ancrage fait passer les faux positifs de 2 à 3 : la
-    grammaire ne contraint que ce qui vient après `oui|`, elle ne peut pas rendre
-    le « oui » plus coûteux, et un vocabulaire tiré du bloc rend au contraire un
-    « oui » plausible plus facile à écrire. Le défaut reste donc la grammaire
-    libre, qui est la configuration entièrement mesurée. Rallumer l'ancrage quand
-    la qualité de la requête devient le sujet — pas avant.
-
-    Autre prix, assumé : une faute de whisper passe telle quelle dans la
-    requête, et la recherche d'image ne trouvera rien — le bon échec."""
-    if texte is None:
-        return _ENTETE + _MOT_LIBRE
-    mots = sorted({m for m in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’\-]{3,24}", texte)},
-                  key=str.lower)
-    if not mots:
-        return 'root ::= " non"\n'
-    litteraux = " | ".join('"' + m.replace("\\", "").replace('"', "") + '"' for m in mots)
-    return _ENTETE + "mot ::= " + litteraux + "\n"
-
-
-def _bloc(texte, sujet, reponse=None):
-    """Un exemple, ou la question en cours. `D:` est présent partout — un format
-    uniforme évite au modèle d'avoir à deviner que la ligne a disparu."""
-    t = " ".join(texte.split())
-    s = "T: " + t + "\nD: " + (sujet or "rien") + "\nR:"
-    return s + (" " + reponse + "\n\n" if reponse else "")
-
-
-PREFIXE = (CONSIGNE + "\nT = transcription, D = sujet deja a l'ecran, R = ta reponse.\n\n"
-           + "".join(_bloc(t, s, r) for t, s, r in EXEMPLES))
+# Le modèle continue la conversation : un saut de ligne est le seul endroit où
+# il change de locuteur de lui-même. Mesuré, il ne s'y arrête presque jamais —
+# 13 blocs sur 14 sont coupés par N_PREDICT. C'est une ceinture, pas la borne.
+ARRETS = ["\n", "\n\n"]
 
 
 class Decideur:
@@ -150,17 +98,16 @@ class Decideur:
     principe, c'est la contrainte du projet — la transcription ne doit pas
     pouvoir sortir, même par accident de configuration réseau."""
 
-    # ctx=1024 et non 2048 : le préfixe pèse ~600 tokens, un bloc ~150, et il
-    # reste 905 Mio de RAM sur cette machine à partager avec whisper. Le cache KV
-    # qu'on n'alloue pas est de la RAM que whisper n'aura pas à disputer.
+    # ctx=1024 : il n'y a plus de préfixe de 600 tokens à loger, mais un bloc de
+    # 45 s de whisper peut en faire 150 à 400 quand il répète, et il reste
+    # 905 Mio de RAM à partager avec whisper. Le cache KV qu'on n'alloue pas est
+    # de la RAM que whisper n'aura pas à disputer.
     def __init__(self, modele=MODELE, threads=4, port=PORT, ctx=1024,
-                 binaire=LLAMA_SERVER, journal=print, demarrage_max=180,
-                 ancrage=False):
+                 binaire=LLAMA_SERVER, journal=print, demarrage_max=180):
         self.modele = Path(modele)
         self.port = port
         self.url = f"http://127.0.0.1:{port}"
         self.journal = journal
-        self.ancrage = ancrage
         self.proc = None
         if not self.modele.exists():
             raise RuntimeError(f"modèle absent : {self.modele}")
@@ -177,13 +124,14 @@ class Decideur:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True)
             self._attendre(demarrage_max)
-        # Le préfixe est lu une fois pour toutes : sans cette passe, c'est le
-        # premier bloc de la soirée qui la paierait (30 à 60 s selon le modèle).
+        # Une passe à vide, pour que le premier bloc de la soirée ne paie pas
+        # l'allocation du cache KV. Elle ne « chauffe » plus rien d'autre : il
+        # n'y a plus de préfixe commun à mettre en cache.
         t0 = time.monotonic()
-        self._appeler(PREFIXE, n=1)
+        self._appeler("bonjour")
         self.chauffe_s = time.monotonic() - t0
-        self.journal(f"décideur local prêt ({self.modele.name}, "
-                     f"préfixe lu en {self.chauffe_s:.1f} s)")
+        self.journal(f"décideur local prêt ({self.modele.name}, sans consigne, "
+                     f"première passe en {self.chauffe_s:.1f} s)")
 
     def _attendre(self, limite):
         t0 = time.monotonic()
@@ -198,14 +146,17 @@ class Decideur:
                 time.sleep(1)
         raise RuntimeError(f"llama-server n'a pas répondu en {limite} s")
 
-    def _appeler(self, prompt, n=24, timeout=180, gram=None):
-        # `n` n'est qu'un plafond : c'est la GRAMMAIRE qui arrête la génération,
-        # dès que `root` est complet. Un plafond trop bas tronquerait une requête
-        # de quatre mots accentués, et la tronquer silencieusement.
+    def _appeler(self, prompt, n=N_PREDICT, timeout=180):
+        # `cache_prompt` est resté à True, et c'est une non-décision assumée :
+        # deux blocs consécutifs n'ont plus aucun préfixe commun, donc il n'a
+        # plus rien à économiser. Mesuré en A/B/A sur les 14 blocs (True, False,
+        # True) : 11,8 s / 11,8 s / 2,3 s de médiane. L'écart entre les deux
+        # passes True est cinq fois celui entre True et False — c'est la
+        # température du Pi qu'on mesure (86 °C, bridé), pas le cache. Il ne
+        # coûte rien, il ne rapporte rien, on ne touche pas.
         corps = json.dumps({
             "prompt": prompt, "n_predict": n, "temperature": 0.0,
-            "grammar": gram if gram is not None else grammaire(), "cache_prompt": True,
-            "stop": ["\n", "T:"],
+            "cache_prompt": True, "stop": ARRETS,
         }).encode()
         req = urllib.request.Request(
             self.url + "/completion", data=corps,
@@ -214,10 +165,16 @@ class Decideur:
             return json.loads(r.read())
 
     # ------------------------------------------------------- le contrat public
-    def __call__(self, texte, dernier_sujet, **_):
-        gram = grammaire(texte if self.ancrage else None)
-        d = self._appeler(PREFIXE + _bloc(texte, dernier_sujet), gram=gram)
-        return lire(d.get("content", ""), dernier_sujet)
+    def __call__(self, texte, *_, **__):
+        """La transcription entre, la suite du modèle sort — verbatim.
+
+        Pas de nettoyage, pas de validation, pas de reformatage, et surtout pas
+        de traduction : la requête part en français dans la recherche d'images.
+        Une sortie vide n'est pas un cas particulier — elle ne trouvera rien, et
+        « rien trouvé » veut déjà dire « on ne touche pas à l'écran »."""
+        d = self._appeler(texte)
+        return {"illustrer": True, "requete": d.get("content", ""),
+                "pourquoi": "sans consigne (local)"}
 
     def fermer(self):
         if self.proc and self.proc.poll() is None:
@@ -232,35 +189,6 @@ class Decideur:
 
     def __exit__(self, *_):
         self.fermer()
-
-
-def lire(brut, dernier_sujet=None):
-    """La réponse du modèle → le dict du contrat.
-
-    La grammaire garantit la forme, mais pas la pertinence : le garde-fou qui
-    reste utile ici est le REFUS du sujet déjà affiché. Un modèle de cette taille
-    y retombe, et c'est le faux positif le plus visible sur la télé — la même
-    image qui se recharge."""
-    s = brut.strip()
-    if not s.startswith("oui|"):
-        return {"illustrer": False, "pourquoi": "rien de visuel (local)"}
-    parts = s.split("|")
-    if len(parts) < 3 or not parts[2].strip():
-        return {"illustrer": False, "pourquoi": f"réponse inutilisable : {s[:40]!r}"}
-    cat, requete = parts[1].strip(), " ".join(parts[2].split())
-    if dernier_sujet and _proche(requete, dernier_sujet):
-        return {"illustrer": False,
-                "pourquoi": f"déjà à l'écran ({dernier_sujet})"}
-    return {"illustrer": True, "requete": requete,
-            "titre": " ".join(requete.split()[:3]),
-            "pourquoi": f"{cat} (local)"}
-
-
-def _proche(a, b):
-    def n(x):
-        return set(re.findall(r"\w{4,}", x.lower()))
-    ma, mb = n(a), n(b)
-    return bool(ma & mb)
 
 
 def _port_pris(port):
