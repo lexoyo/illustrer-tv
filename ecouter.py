@@ -128,12 +128,32 @@ def enregistrer(dest, secondes, carte):
 # la pièce souffle toute seule, 9,7 à 17,3 dB dès qu'une voix passe.
 #
 # D'où la mesure retenue : `fort` = p90 des trames de 200 ms du bloc, comparé à
-# un **plancher glissant** = 25e centile des `fond` (p10) des vingt derniers
-# blocs. Le 25e centile et pas la médiane : un quart de blocs calmes suffit à
-# tenir le plancher au niveau de la pièce, donc une longue conversation ne
-# referme pas la porte derrière elle. Et au tout premier bloc, faute
-# d'historique, le plancher est le p10 du bloc lui-même : le critère dégénère en
-# « écart interne au bloc », qui est justement le plus net des deux.
+# une **référence de fond** qui est le plus haut de deux planchers :
+#
+# - le **plancher glissant** de la pièce, 25e centile des `fond` (p10) des vingt
+#   derniers blocs. Le 25e centile et pas la médiane : un quart de blocs calmes
+#   suffit à le tenir au niveau de la pièce, donc une longue conversation ne
+#   referme pas la porte derrière elle ;
+# - le **fond du bloc lui-même**, parce que le silence de la pièce ne peut pas
+#   être plus bas que ce que ce bloc-ci a entendu pendant ses creux.
+#
+# Prendre le plus haut des deux n'est pas une ceinture de plus, c'est ce qui fait
+# tenir la mesure : sans lui, un plancher hérité d'une soirée plus calme laisse
+# passer une pièce vide. Vérifié sur les sept blocs disponibles (trois de pièce
+# vide pris ce soir, quatre de voix pris la nuit du 03 au 04, plancher 9 dB plus
+# bas) dans trois ordres de présentation — dont un qui mélange exprès les deux
+# soirées, ce qui simule un saut de plancher de 9 dB en 45 s :
+#
+# | ordre | classement |
+# |---|---|
+# | pièce puis voix | 7/7 |
+# | entrelacé | 7/7 |
+# | voix puis pièce (pire cas) | 7/7 |
+#
+# Avec le seul plancher glissant, les deux derniers ordres se trompaient sur les
+# trois blocs de pièce vide. La marge restante est mince et il faut le dire :
+# 3,9 dB de garde sur le bloc vide le plus fort, 4,7 dB sur la voix la plus
+# faible, et **sept blocs ne mesurent presque rien** (un cas vaut 14 points).
 TRAME_MS = 200          # assez long pour lisser une consonne, assez court pour
                         # qu'une syllabe ne soit pas noyée dans 45 s de souffle
 MARGE_DB = 5.0          # entre 1,1 (pièce vide) et 9,7 (la voix la plus faible)
@@ -416,11 +436,11 @@ def cycle(n, ecran, stt, etat, args, trace):
     fort, fond = niveau(wav)
     if fort == fort:                     # NaN = WAV illisible : on ne bloque pas
         etat["fonds"].append(fond)       # sur une mesure qu'on n'a pas
-        seuil = plancher(etat["fonds"]) + MARGE_DB
+        seuil = max(plancher(etat["fonds"]), fond) + MARGE_DB
         if fort < seuil:
             journal(f"[{n}] {fort:.1f} dBFS sous le seuil {seuil:.1f} "
-                    f"(plancher {seuil - MARGE_DB:.1f}) — la pièce se tait, "
-                    f"pas de whisper")
+                    f"(fond du bloc {fond:.1f}, pièce {plancher(etat['fonds']):.1f}) "
+                    f"— la pièce se tait, pas de whisper")
             return
     d = CHRONO(); texte = stt(wav);                           t["stt"] = CHRONO() - d
     journal(f"[{n}] {t['stt']:.1f}s stt · {temperature():.1f}°C · "
