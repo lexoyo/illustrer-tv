@@ -1,0 +1,41 @@
+[Unit]
+# L'app écoute la pièce et illustre la conversation sur la télé.
+# Installation : voir installer-service.sh
+Description=illustrer-tv — écoute la pièce et illustre sur la télé
+Documentation=https://github.com/lexoyo/illustrer-tv
+# Le réseau est nécessaire (recherche d'image), mais la boucle survit à sa
+# perte : on ne l'exige donc pas, on l'attend seulement.
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=lexoyo
+Group=lexoyo
+WorkingDirectory=/home/lexoyo/illustrer-tv
+
+# Le « + » exécute ces deux lignes en root, même avec User=lexoyo ci-dessus.
+# Le framebuffer de la console s'éteint tout seul après ~10 min sans frappe au
+# clavier — y compris sur un système sans bureau. Quand c'est arrivé, les
+# écritures dans /dev/fb0 « réussissent » et l'écran reste noir, sans le moindre
+# message d'erreur. C'est le piège qui a coûté le plus de temps sur ce projet.
+ExecStartPre=+/bin/sh -c 'echo 0 > /sys/class/graphics/fb0/blank'
+ExecStartPre=+/bin/sh -c '/usr/bin/setterm --blank 0 --powerdown 0 >/dev/tty1 || true'
+
+ExecStart=/home/lexoyo/illustrer-tv/.venv/bin/python -u ecouter.py --decideur local
+
+# Une soirée d'écoute ne doit pas s'arrêter sur une erreur réseau ou une image
+# corrompue. La boucle encaisse déjà les erreurs de cycle ; ceci couvre le reste.
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=illustrer-tv
+
+# Le Pi 3B n'a que 905 Mio, et deux modèles y vivent. Si quelque chose fuit, on
+# préfère un redémarrage propre à un système qui rame en swappant sur la carte SD.
+MemoryMax=800M
+
+[Install]
+WantedBy=multi-user.target
