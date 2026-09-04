@@ -74,18 +74,35 @@ générer la réponse), et une **grammaire GBNF** qui rend le format de sortie
 impossible à rater. Méthode et chiffres complets :
 [`MESURES-DECIDEUR.md`](MESURES-DECIDEUR.md).
 
-## Le mur, et il n'est pas franchi
+## Le budget d'un cycle, mesuré sur la machine cible
 
-`base` q5 tourne à **RTF 1,00** sur un i7-7500U en beam search, donc trois à
-quatre minutes de calcul pour quarante secondes d'audio sur un Pi 3B. Le greedy
-le ramène à 0,61 mais **détruit les noms propres** — « architecture » devient
-« séptéculture » — ce qui est précisément ce qu'on ne peut pas perdre.
+Les deux murs annoncés plus haut dans l'histoire de ce projet ont été mesurés,
+et **aucun des deux n'a tenu**.
 
-Et un second mur, non mesuré : la **coexistence en mémoire**. Le décideur occupe
-510 Mio, `base` en demandera 200 à 250, sur 905 disponibles.
+| poste | sur le Pi 3B |
+|---|---|
+| whisper `base` q5, 2 threads | **78,4 s pour 40 s d'audio — RTF 1,96** |
+| décideur `qwen2.5-0.5b`, préfixe en cache | 10,5 s (médiane) |
+| recherche + téléchargement + affichage | ~1,5 s |
+| **cycle complet** | **~90 s pour 40 s écoutées** |
 
-La piste à tester en premier : **sherpa-onnx**, déjà installé, mesuré à RTF 0,81
-sur cette machine. Sa qualité sur les noms concrets est inconnue.
+Autrement dit : **on entend un peu moins de la moitié de la conversation**, ce
+qui est le compromis assumé depuis le début. Une extrapolation antérieure
+annonçait « trois à quatre minutes » — elle était pessimiste d'un facteur 2,5,
+et c'est la mesure sur la machine qui l'a corrigée.
+
+**La coexistence en mémoire ne pose pas de problème non plus.** Les deux modèles
+chargés simultanément : 240 Mo utilisés sur 905, 664 Mo disponibles, **aucun
+swap**, et la transcription prend le même temps qu'isolée (78,5 s contre 78,4).
+Le « 510 Mio » relevé pour le décideur comptait ses pages mmappées, qui sont du
+cache évictable.
+
+Reste vrai : `base` en greedy tomberait à RTF 0,61 mais **détruirait les noms
+propres** (« architecture » devient « séptéculture »), et c'est exactement ce
+qu'on ne peut pas perdre. Le beam search n'est pas négociable ici.
+
+Thermique : 72 à 74 °C en fin de cycle, sans bridage actif, sur une machine sans
+dissipateur.
 
 ## Lire ce dépôt
 

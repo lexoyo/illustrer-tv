@@ -110,3 +110,35 @@ modèle.
   générateur demain.
 - Le corpus (`corpus/`) est **exclu du dépôt** : ce sont des conversations
   privées captées dans le salon.
+
+## 2026-09-04, matin — les deux murs tombent, mesurés sur la machine
+
+Reprise après la publication du dépôt. Trois mesures faites directement sur
+`raspi2`, avec le modèle et le son réels.
+
+**whisper `base` q5 sur le Pi : 78,4 s pour 40 s d'audio, RTF 1,96**, 2 threads,
+chargement en 0,5 s. Le texte rendu est exact, noms concrets compris. La veille,
+j'avais extrapolé « 3 à 4 minutes » depuis un RTF mesuré sur `shiao` : **faux
+d'un facteur 2,5**. Extrapoler d'une machine à l'autre n'a pas marché, et c'est
+la deuxième fois dans ce projet (microturn avait relevé la même erreur sur le
+RTF de sherpa, annoncé à 0,37 et mesuré à 1,151).
+
+**La coexistence en mémoire n'est pas un problème.** Décideur et STT chargés
+ensemble : 240 Mo utilisés sur 905, 664 disponibles, swap inchangé à 17 Mio, et
+la transcription tourne au même temps qu'isolée. Le RSS de 510 Mio relevé pour
+`llama-server` comptait ses pages mmappées.
+
+**Le budget d'un cycle est donc de ~90 s pour 40 s écoutées** — on entend un peu
+moins de la moitié de la conversation, ce qui est le compromis retenu dès le
+départ.
+
+**Déploiement** : le Pi n'est plus mis à jour par copie mais par `git pull`
+depuis ce dépôt. `~/illustrer-tv` y est un clone ; `.venv/`, `corpus/` et les
+modèles restent hors dépôt.
+
+Installé sur le Pi ce matin : `models/ggml-base-q5_1.bin` et `pywhispercpp` dans
+le venv du projet.
+
+**Ce qui reste, et c'est maintenant le seul obstacle** : la boucle `ecouter.py`
+n'a toujours jamais tourné, et le déclencheur silence/minuteur n'est pas écrit.
+Tous les étages sont mesurés séparément ; aucun ne les a encore enchaînés.

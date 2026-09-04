@@ -8,3 +8,6 @@ __pycache__/
 # pas vers un dépôt public. Cette ligne est une garantie, pas une commodité.
 corpus/
 *.wav
+
+# Les modeles sont telecharges, pas versionnes
+models/
