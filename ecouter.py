@@ -56,6 +56,14 @@ BLOC_S = 45
 MODELE_STT = Path(__file__).parent / "models/ggml-base-q5_1.bin"
 MODELE_LLM = "google/gemini-2.5-flash-lite"   # le défaut mesuré de microturn
 MODELE_LOCAL = Path.home() / "bench/models/qwen25-05b-q4.gguf"
+# Trois blocs de contexte, ~2 min de pièce. Alex y tient, et la raison est
+# mesurée : sur cette machine whisper met 79 à 416 s pour 45 s d'audio, donc les
+# fenêtres sourdes sont longues et un bloc sur deux revient mal transcrit
+# (« un éduciel », « ça te veuille »). Garder les deux blocs précédents fait
+# **survivre le sujet à un bloc raté**. Le prix est connu : ce qu'on donne au
+# modèle n'est plus « ce qui vient d'être dit » mais « ce qui s'est dit dans les
+# dernières minutes », et l'image peut donc parler d'un sujet déjà quitté.
+FENETRE = 3
 UA = "illustrer-tv/0.1 (prototype; alex@lexoyo.me)"
 CHRONO = time.monotonic
 
@@ -237,16 +245,21 @@ def parole_utile(texte):
 
 
 # ---------------------------------------------------------------- décision
-# **Il n'y a plus de consigne.** La voie distante suit la voie locale à la
-# lettre (`decideur_local.py`, qui porte le raisonnement et les mesures) : on
-# envoie la transcription du bloc et rien d'autre, et ce que le modèle écrit
-# devient la requête d'image, verbatim. Les deux voies doivent rester
-# interchangeables sur les mêmes blocs, sinon les comparer ne veut plus rien
-# dire — c'est une règle du projet depuis le premier jour.
+# **Une ligne d'instruction, puis la transcription. Rien d'autre.** La voie
+# distante suit la voie locale à la lettre — même ligne, même ordre, même sortie
+# verbatim (`decideur_local.py`, qui porte le raisonnement et les mesures). Les
+# deux voies doivent rester interchangeables sur les mêmes blocs, sinon les
+# comparer ne veut plus rien dire : c'est une règle du projet depuis le premier
+# jour.
 #
-# `response_format: json_object` est parti avec la consigne : sans schéma à
-# remplir, exiger du JSON n'aurait plus rien à décrire.
+# `response_format: json_object` est parti avec l'ancienne consigne : sans schéma
+# à remplir, exiger du JSON n'aurait plus rien à décrire.
 def decider(texte, *_, modele=MODELE_LLM, timeout=20, jetons=32):
+    # `decideur_local` est importé ici et pas en tête : sur le Pi la voie locale
+    # démarre un llama-server, et ce module ne doit pas être chargé pour rien
+    # quand on tourne en distant. Seule la ligne d'INSTRUCTION est partagée —
+    # c'est exactement ce qui garde les deux voies comparables.
+    import decideur_local
     """Même contrat que `decideur_local.Decideur` : la transcription entre, la
     suite du modèle sort verbatim, et `illustrer` est toujours vrai.
 
@@ -259,7 +272,8 @@ def decider(texte, *_, modele=MODELE_LLM, timeout=20, jetons=32):
         "https://openrouter.ai/api/v1/chat/completions",
         headers={"Authorization": f"Bearer {cle}", "Content-Type": "application/json"},
         json={"model": modele, "temperature": 0, "max_tokens": jetons,
-              "messages": [{"role": "user", "content": texte}]},
+              "messages": [{"role": "user",
+                            "content": decideur_local.INSTRUCTION + "\n" + texte}]},
         timeout=timeout)
     r.raise_for_status()
     return {"illustrer": True,
@@ -453,7 +467,10 @@ def cycle(n, ecran, stt, etat, args, trace):
         journal("    du son, mais aucune parole — on passe")
         return
 
-    d = CHRONO(); verdict = etat["decide"](texte);            t["llm"] = CHRONO() - d
+    etat["fenetre"] = (etat["fenetre"] + [texte])[-FENETRE:]
+    d = CHRONO()
+    verdict = etat["decide"]("\n".join(etat["fenetre"]))
+    t["llm"] = CHRONO() - d
     # Le modèle ne décide plus rien : `illustrer` est toujours vrai, et ce qu'il
     # a écrit part tel quel dans la recherche. Ce qui est jeté, c'est la
     # RECHERCHE quand elle ne trouve rien, plus jamais le bloc.
@@ -524,6 +541,7 @@ def main():
     # `vues` : les fichiers image déjà montrés, dans l'ordre — c'est ce qui
     # permet de rendre une AUTRE image quand la requête ne change pas.
     etat = {"carte": None if a.wav else carte_micro(),
+            "fenetre": [],
             "fonds": collections.deque(maxlen=MEMOIRE_FOND),
             "vues": collections.OrderedDict()}
     # Le décideur est construit ici, pas appelé par son nom dans la boucle : les

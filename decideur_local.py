@@ -14,13 +14,21 @@ vélo… au sacré cœur », il a rendu `oui|objet|vélo et vélo partageur` : i
 absent de la transcription. Ce résultat-là coûtait ~600 tokens de préfixe et 5 à
 19 s par bloc.
 
-Ce qui reste tient en une ligne : **le prompt est la transcription du bloc, et
-ce que le modèle écrit ensuite est la requête d'image, verbatim.** Le modèle ne
-décide plus s'il faut illustrer — c'est `ecouter.py` qui déclenche, sur du son
-et des mots (cf. son § « niveau ») — il dit seulement quoi montrer. `illustrer`
-vaut donc TOUJOURS vrai dès qu'on l'a appelé, et le dict du contrat ne change
-pas pour autant : les deux voies, locale et distante, doivent rester
-interchangeables sur les mêmes blocs.
+Ce qui reste tient en deux lignes : **une ligne d'instruction, puis la
+transcription. Ce que le modèle écrit ensuite est la requête d'image,
+verbatim.** Le modèle ne décide plus s'il faut illustrer — c'est `ecouter.py`
+qui déclenche, sur du son et des mots (cf. son § « niveau ») — il dit seulement
+quoi montrer. `illustrer` vaut donc TOUJOURS vrai dès qu'on l'a appelé, et le
+dict du contrat ne change pas pour autant : les deux voies, locale et distante,
+doivent rester interchangeables sur les mêmes blocs.
+
+La ligne d'instruction a été remise **après** un premier essai entièrement nu, et
+c'est cet essai qui l'a justifiée : sans elle, un modèle de base *continue* le
+texte au lieu d'en extraire quoi que ce soit (« J'aime le vélo… au sacré cœur »
+→ « . C'est un bon moyen »), et les quatorze essais donnaient zéro pertinence.
+**Une ligne, et rien d'autre** : pas d'exemples, pas de catégories, pas de
+grammaire, pas de nombre de mots imposé. Le pari reste le même — on regarde ce
+que le modèle fait, on ne lui apprend pas à le faire.
 
 Ce que ça change, et ce que ça ne change pas — mesuré le 04/09/2026 sur ce Pi,
 14 blocs réels relevés dans le journal du service :
@@ -30,18 +38,16 @@ Ce que ça change, et ce que ça ne change pas — mesuré le 04/09/2026 sur ce 
   plus 600 tokens mais 12 à 28, donc la lecture du prompt — le poste
   principal sur un Cortex-A53, c'était le résultat n° 1 de `MESURES-DECIDEUR.md`
   — a simplement disparu. Ce qui reste est de la génération pure.
-- **le modèle ne produit PAS des requêtes, il continue la conversation.** C'est
-  le résultat honnête de l'expérience, et il faut le lire avant de croire au
-  chiffre du dessus. Sur « J'aime le vélo… au sacré cœur partout », il écrit
-  « . C'est un bon moyen » ; sur les éléphants d'Asie, « C'est une propriété de
-  la ». Aucune de ces suites ne parle du sujet du bloc — un modèle de base
-  complète du texte, il ne le résume pas, et sans consigne il n'a aucune raison
-  de faire autre chose.
-- **l'écran bouge quand même, et c'est ce qui était demandé** : 10 de ces 14
-  suites trouvent une image sur Commons (contre 3 « oui » en 136 cycles avant).
-  Les images sont sans rapport avec la conversation — un mot de la suite tombe
-  sur un titre de Commons. « Se tromper d'image n'est pas grave, rester figé
-  l'est » : c'est le pari d'Alex, et il est tenu à la lettre.
+- **sans la ligne d'instruction, le modèle ne produisait PAS des requêtes : il
+  continuait la conversation.** « J'aime le vélo… au sacré cœur partout » →
+  « . C'est un bon moyen » ; les éléphants d'Asie → « C'est une propriété de
+  la ». Un modèle de base complète du texte, il ne le résume pas. 10 de ces 14
+  suites trouvaient quand même une image sur Commons — un mot de la suite tombe
+  sur un titre — donc l'écran bougeait, avec **zéro pertinence**. C'est ce
+  résultat qui a fait remettre la ligne.
+- **avec la ligne**, voir la mesure en tête de `ecouter.py` § décision et le
+  `JOURNAL.md` : c'est la seule chose qui a changé entre les deux relevés, sur
+  les mêmes blocs et le même `n_predict`.
 
 Ce qui SURVIT de `MESURES-DECIDEUR.md`, et qu'il ne faut pas défaire :
 `llama-server` plutôt qu'un process par bloc (le rechargement du modèle coûtait
@@ -62,6 +68,18 @@ LLAMA_SERVER = Path(os.environ.get("ILLUSTRER_LLAMA_SERVER",
 MODELE = Path(os.environ.get("ILLUSTRER_MODELE_LOCAL",
                              Path.home() / "bench/models/qwen25-05b-q4.gguf"))
 PORT = int(os.environ.get("ILLUSTRER_PORT", "8099"))
+
+# **Une ligne, et strictement rien d'autre.** Elle est écrite sans accents : le
+# tokenizer d'un 0,5 B les rend plus chers, et la consigne supprimée le faisait
+# déjà pour cette raison. Elle est en français parce que la requête doit sortir
+# en français — la recherche d'images se fait sur Commons en français.
+#
+# Ce qui n'y est PAS, et qui ne doit pas y revenir : les douze exemples, les huit
+# catégories, la grammaire GBNF, un nombre de mots imposé, la règle « déjà à
+# l'écran ». Chacun a été mesuré et supprimé le 04/09/2026 ; les remettre parce
+# que « ça marcherait mieux » referait la machinerie qu'une soirée de six heures
+# et une seule image ont condamnée.
+INSTRUCTION = "Ecris les mots-cles d'une recherche d'image sur ce dont on parle."
 
 # La SEULE borne qui reste, et ce n'est pas une consigne déguisée : le modèle
 # écrit ce qu'il veut, on limite seulement le temps qu'il a le droit d'y passer.
@@ -148,10 +166,11 @@ class Decideur:
 
     def _appeler(self, prompt, n=N_PREDICT, timeout=180):
         # `cache_prompt` est resté à True, et c'est une non-décision assumée :
-        # deux blocs consécutifs n'ont plus aucun préfixe commun, donc il n'a
-        # plus rien à économiser. Mesuré en A/B/A sur les 14 blocs (True, False,
-        # True) : 11,8 s / 11,8 s / 2,3 s de médiane. L'écart entre les deux
-        # passes True est cinq fois celui entre True et False — c'est la
+        # le préfixe commun d'un bloc à l'autre est désormais la ligne
+        # d'INSTRUCTION, soit ~16 tokens — il n'a quasiment rien à économiser.
+        # Mesuré en A/B/A sur 14 blocs quand il n'y avait aucun préfixe du tout
+        # (True, False, True) : 11,8 s / 11,8 s / 2,3 s de médiane. L'écart entre
+        # les deux passes True est cinq fois celui entre True et False — c'est la
         # température du Pi qu'on mesure (86 °C, bridé), pas le cache. Il ne
         # coûte rien, il ne rapporte rien, on ne touche pas.
         corps = json.dumps({
@@ -172,7 +191,7 @@ class Decideur:
         de traduction : la requête part en français dans la recherche d'images.
         Une sortie vide n'est pas un cas particulier — elle ne trouvera rien, et
         « rien trouvé » veut déjà dire « on ne touche pas à l'écran »."""
-        d = self._appeler(texte)
+        d = self._appeler(INSTRUCTION + "\n" + texte)
         return {"illustrer": True, "requete": d.get("content", ""),
                 "pourquoi": "sans consigne (local)"}
 
