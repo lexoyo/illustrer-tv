@@ -180,17 +180,20 @@ def chercher_image(requete, timeout=15):
     refusées, et le refus ressemble à « aucun résultat »."""
     import requests
     api = "https://commons.wikimedia.org/w/api.php"
+    # 20 résultats et non 8 : le filtre paysage + résolution en écarte
+    # beaucoup, et il vaut mieux chercher large que se rabattre sur un portrait.
     p = {"action": "query", "format": "json", "generator": "search",
          "gsrsearch": f"{requete} filetype:bitmap", "gsrnamespace": "6",
-         "gsrlimit": "8", "prop": "imageinfo",
+         "gsrlimit": "20", "prop": "imageinfo",
          "iiprop": "url|mime|size", "iiurlwidth": "1920"}
     try:
         d = requests.get(api, params=p, headers={"User-Agent": UA},
                          timeout=timeout).json()
         for page in (d.get("query", {}).get("pages") or {}).values():
             info = (page.get("imageinfo") or [{}])[0]
-            if info.get("mime") in ("image/jpeg", "image/png") and info.get("thumburl"):
-                return info["thumburl"], f"commons:{page.get('title', '?')}"
+            if not utilisable(info):
+                continue
+            return info["thumburl"], f"commons:{page.get('title', '?')}"
     except Exception as e:
         journal(f"   commons a échoué : {e}")
     try:
@@ -203,6 +206,25 @@ def chercher_image(requete, timeout=15):
     except Exception as e:
         journal(f"   openverse a échoué : {e}")
     return None, None
+
+
+# L'écran est une télé : 1920×1080, donc du 16/9 posé à l'horizontale.
+LARGEUR_MIN = 1280      # en dessous, l'agrandissement se voit sur 1920 px
+RATIO_MIN = 1.2         # 1,0 = carré ; en dessous on est en portrait
+
+
+def utilisable(info):
+    """Écarte les portraits et les images trop petites.
+
+    Le cadrage `cover` remplit l'écran en rognant : sur un portrait, il ne
+    resterait qu'une bande verticale au milieu de l'image, souvent hors sujet.
+    Mieux vaut chercher plus loin dans les résultats que d'afficher ça."""
+    if info.get("mime") not in ("image/jpeg", "image/png"):
+        return False
+    if not info.get("thumburl"):
+        return False
+    l, h = info.get("width") or 0, info.get("height") or 1
+    return l >= LARGEUR_MIN and l / h >= RATIO_MIN
 
 
 def telecharger(url, timeout=20):

@@ -87,13 +87,18 @@ def pix_fmt_for(info: fbmod.FbInfo) -> str:
     )
 
 
-def decode_ffmpeg(path: str, info: fbmod.FbInfo, ffmpeg: str) -> bytes:
+def decode_ffmpeg(path: str, info: fbmod.FbInfo, ffmpeg: str,
+                  cadrage: str = "cover") -> bytes:
     W, H = info.xres, info.yres
     pf = pix_fmt_for(info)
-    vf = (
-        f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
-        f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,format={pf}"
-    )
+    # Le repli ffmpeg doit cadrer comme pillow, sinon l'option ne veut rien dire
+    # selon le backend — et le backend, lui, est choisi automatiquement.
+    if cadrage == "cover":
+        vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+              f"crop={W}:{H},format={pf}")
+    else:
+        vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+              f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,format={pf}")
     cmd = [ffmpeg, "-v", "error", "-nostdin", "-i", path,
            "-vf", vf, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", pf, "-"]
     p = subprocess.run(cmd, capture_output=True)
@@ -117,14 +122,16 @@ def preload(backend: str) -> None:
         from PIL import Image  # noqa: F401
 
 
-def decode_pillow(path: str, fbuf: fbmod.Framebuffer, quality: str) -> bytes:
+def decode_pillow(path: str, fbuf: fbmod.Framebuffer, quality: str,
+                  cadrage: str = "cover") -> bytes:
     import numpy as np
     from PIL import Image
 
     resample = {"fast": Image.BILINEAR, "good": Image.LANCZOS}[quality]
     with Image.open(path) as img:
         img.draft("RGB", fbuf.size)  # décodage JPEG en DCT scaling : gros gain
-        canvas = fbmod.letterbox(img, fbuf.size, resample=resample)
+        cadre = fbmod.cover if cadrage == "cover" else fbmod.letterbox
+        canvas = cadre(img, fbuf.size, resample=resample)
     return fbuf.pack_array(np.asarray(canvas))
 
 
@@ -133,6 +140,10 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", nargs="?", help="chemin local ou URL http(s)")
     ap.add_argument("--backend", choices=["auto", "pillow", "ffmpeg"], default="auto")
+    ap.add_argument("--cadrage", choices=["cover", "contain"], default="cover",
+                    help="cover : remplit l'écran en rognant (défaut, c'est ce "
+                         "qu'on veut sur une télé) ; contain : image entière "
+                         "avec des bandes noires")
     ap.add_argument("--quality", choices=["fast", "good"], default="fast",
                     help="filtre de redimensionnement du backend pillow")
     ap.add_argument("--device", default="/dev/fb0")
@@ -182,9 +193,9 @@ def main() -> int:
             for _ in range(max(1, args.repeat)):
                 t_a = time.perf_counter()
                 if backend == "pillow":
-                    frame = decode_pillow(path, fbuf, args.quality)
+                    frame = decode_pillow(path, fbuf, args.quality, a.cadrage)
                 else:
-                    frame = decode_ffmpeg(path, fbuf.info, ffmpeg)
+                    frame = decode_ffmpeg(path, fbuf.info, ffmpeg, a.cadrage)
                 t_decode = time.perf_counter()
                 fbuf.write_frame(frame)
                 t_write = time.perf_counter()

@@ -94,14 +94,17 @@ etape(5, f"recherche Wikimedia : « {v['requete']} »")
 p = urllib.parse.urlencode({
     "action": "query", "format": "json", "generator": "search",
     "gsrsearch": f"{v['requete']} filetype:bitmap", "gsrnamespace": "6",
-    "gsrlimit": "8", "prop": "imageinfo", "iiprop": "url|mime", "iiurlwidth": "1920"})
+    "gsrlimit": "20", "prop": "imageinfo", "iiprop": "url|mime", "iiurlwidth": "1920"})
 d = json.loads(urllib.request.urlopen(
     urllib.request.Request(f"https://commons.wikimedia.org/w/api.php?{p}",
                            headers={"User-Agent": UA}), timeout=20).read())
 url = None
 for page in (d.get("query", {}).get("pages") or {}).values():
     i = (page.get("imageinfo") or [{}])[0]
-    if i.get("mime") in ("image/jpeg", "image/png") and i.get("thumburl"):
+    # paysage et assez grand : l'écran est une télé, et le cadrage rogne
+    if (i.get("mime") in ("image/jpeg", "image/png") and i.get("thumburl")
+            and (i.get("width") or 0) >= 1280
+            and (i.get("width") or 0) / (i.get("height") or 1) >= 1.2):
         url, titre = i["thumburl"], page.get("title"); break
 if not url:
     sys.exit("aucune image trouvée")

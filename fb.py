@@ -228,14 +228,20 @@ class Framebuffer:
         raise NotImplementedError(f"{i.bits_per_pixel} bpp non géré")
 
     # -- image ------------------------------------------------------------
-    def show_image(self, img, resample=None) -> None:
-        """Affiche une image PIL en plein écran, ratio conservé, fond noir."""
+    def show_image(self, img, resample=None, cadrage="cover") -> None:
+        """Affiche une image PIL en plein écran, ratio conservé.
+
+        `cover` (défaut) remplit tout l'écran quitte à rogner les bords ;
+        `contain` montre l'image entière avec des bandes noires. Sur une télé,
+        les bandes se voient et le rognage non : c'est `cover` qu'on veut, et
+        c'est pour ça qu'il est le défaut."""
         import numpy as np
         from PIL import Image
 
         if resample is None:
             resample = Image.BILINEAR
-        canvas = letterbox(img, self.size, resample=resample)
+        cadre = cover if cadrage == "cover" else letterbox
+        canvas = cadre(img, self.size, resample=resample)
         self.write_frame(self.pack_array(np.asarray(canvas)))
 
     def probe(self, frame: bytes, n: int = 64) -> tuple[int, int]:
@@ -274,3 +280,26 @@ def letterbox(img, size: tuple[int, int], resample=None, bg=(0, 0, 0)):
     canvas = Image.new("RGB", (W, H), bg)
     canvas.paste(resized, ((W - nw) // 2, (H - nh) // 2))
     return canvas
+
+
+def cover(img, size: tuple[int, int], resample=None, bg=(0, 0, 0)):
+    """Remplit tout le cadre en conservant le ratio, en rognant le débord.
+
+    L'inverse de `letterbox` : on prend le plus GRAND facteur d'échelle au lieu
+    du plus petit, puis on coupe ce qui dépasse, centré. Une image de ratio
+    proche remplit l'écran sans perte visible ; une image très éloignée du
+    16/9 perd beaucoup, d'où le filtre en amont qui écarte les portraits."""
+    from PIL import Image, ImageOps
+
+    if resample is None:
+        resample = Image.BILINEAR
+    W, H = size
+    img = ImageOps.exif_transpose(img)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    w, h = img.size
+    scale = max(W / w, H / h)
+    nw, nh = max(W, round(w * scale)), max(H, round(h * scale))
+    resized = img.resize((nw, nh), resample)
+    gauche, haut = (nw - W) // 2, (nh - H) // 2
+    return resized.crop((gauche, haut, gauche + W, haut + H))
